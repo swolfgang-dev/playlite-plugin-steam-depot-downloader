@@ -160,6 +160,8 @@ class Network:
                 '--entrypoint', '/bin/sh', IMAGE, '-c', command]
 
     def check(self):
+        if not self.container or not self.directory:
+            raise RuntimeError('Connect the VPN from this settings window before signing into Moon or downloading. A previous connection must be reconnected after restarting or reloading the plugin.')
         data = self.inspect()
         if not data['State']['Running'] or data['State'].get('Health', {}).get('Status') != 'healthy':
             raise RuntimeError('The VPN is not healthy. Downloads are blocked.')
@@ -179,4 +181,4 @@ class Network:
         address = self.docker(*self.probe_args('wget -q -T 10 -O - https://api.ipify.org'), timeout=20)
         import ipaddress
         address = str(ipaddress.ip_address(address))
-        return 'VPN connected. Isolated public IP: ' + address + '. Game downloads are not implemented yet.'
+        return 'VPN connected. Isolated public IP: ' + address + '. Isolated download workers are ready.'

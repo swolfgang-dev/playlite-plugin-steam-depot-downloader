@@ -13,6 +13,13 @@ from downloader.settings import Preferences
 from downloader.credentials import validate_credentials
 
 class Tests(unittest.TestCase):
+    def test_check_without_session_reports_reconnect_before_docker(self):
+        network = Network()
+        with patch.object(network, "docker") as docker:
+            with self.assertRaisesRegex(RuntimeError, "Connect the VPN from this settings window"):
+                network.check()
+            docker.assert_not_called()
+
     def test_preferences_reject_multiple_countries_and_invalid_protocol(self):
         for preferences in [Preferences('Canada,Germany'), Preferences('', 'wireguard')]:
             with self.assertRaises(ValueError): preferences.validate()
