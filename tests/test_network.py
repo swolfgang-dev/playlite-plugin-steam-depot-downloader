@@ -105,7 +105,7 @@ class ConnectionTests(unittest.TestCase):
         error, calls = self.run_failed_connect('AUTH: Received control message: AUTH_FAILED\nsecret diagnostic detail')
         self.assertIn('NordVPN rejected', error)
         self.assertNotIn('secret diagnostic detail', error)
-        self.assertEqual(sum(args[0] == 'logs' for args in calls), 1)
+        self.assertEqual(sum(args[0] == 'logs' for args in calls), 2)
 
     def test_cancel_interrupts_connection_and_cleans_up(self):
         error, calls = self.run_failed_connect(progress=lambda network, text: network.cancel() if text.startswith('Connecting') else None)
@@ -141,3 +141,27 @@ class ConnectionTests(unittest.TestCase):
             self.assertIn('203.0.113.5', network.check())
 
 if __name__ == '__main__': unittest.main()
+
+class RetryTests(unittest.TestCase):
+    def test_first_rejection_retries_and_returns_verified_connection(self):
+        from downloader.network import AuthenticationRejected
+        network=Network()
+        with patch.object(network, '_connect_once', side_effect=[AuthenticationRejected('rejected'), 'VPN verified']) as connect, patch.object(network.cancelled, 'wait'):
+            self.assertEqual(network.connect(Preferences(), 'user', 'password'), 'VPN verified')
+            self.assertEqual(connect.call_count,2)
+
+    def test_repeated_rejection_is_bounded(self):
+        from downloader.network import AuthenticationRejected
+        network=Network()
+        with patch.object(network, '_connect_once', side_effect=AuthenticationRejected('rejected')) as connect, patch.object(network.cancelled, 'wait'):
+            with self.assertRaisesRegex(RuntimeError, 'can be temporary'):
+                network.connect(Preferences(), 'user', 'password')
+            self.assertEqual(connect.call_count,2)
+
+    def test_cancellation_during_retry_never_starts_second_attempt(self):
+        from downloader.network import AuthenticationRejected
+        network=Network()
+        with patch.object(network, '_connect_once', side_effect=AuthenticationRejected('rejected')) as connect, patch.object(network.cancelled, 'wait', side_effect=lambda _: network.cancel()):
+            with self.assertRaisesRegex(RuntimeError, 'cancelled'):
+                network.connect(Preferences(), 'user', 'password')
+            self.assertEqual(connect.call_count,1)

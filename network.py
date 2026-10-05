@@ -20,6 +20,10 @@ iptables -A PLAYLITE_WORKER -j REJECT
 iptables -I OUTPUT 1 -m owner --uid-owner 65534 -j PLAYLITE_WORKER
 '''
 
+class AuthenticationRejected(RuntimeError):
+    pass
+
+
 class Network:
     def __init__(self):
         self.name = 'playlite-steam-downloader-vpn-' + str(os.getuid())
@@ -82,6 +86,19 @@ class Network:
         return 'Disconnected. Downloads remain disabled.'
 
     def connect(self, preferences, username, password, deadline=90, progress=lambda text: None):
+        limit = time.monotonic() + deadline
+        for attempt in range(2):
+            self.check_cancelled()
+            try:
+                return self._connect_once(preferences, username, password, max(0, limit - time.monotonic()), progress)
+            except AuthenticationRejected:
+                if attempt or limit - time.monotonic() <= 2:
+                    raise AuthenticationRejected('NordVPN rejected the connection attempts. This can be temporary; the saved credentials have not been changed. Try again later, and check the service credentials if rejection persists.') from None
+                progress('NordVPN rejected the first connection. Retrying once with automatic server selection… Cancel is available.')
+                self.cancelled.wait(2)
+                self.check_cancelled()
+
+    def _connect_once(self, preferences, username, password, deadline=90, progress=lambda text: None):
         progress('Preparing the isolated OpenVPN container…')
         preferences.validate()
         username, password = validate_credentials(username, password)
@@ -132,14 +149,14 @@ class Network:
                 if not data['State']['Running']:
                     raise RuntimeError('The VPN stopped before establishing a tunnel.')
                 logs = self.docker('logs', '--tail', '80', self.container)
-                if 'AUTH_FAILED' in logs:
-                    raise RuntimeError('NordVPN rejected the saved service credentials. Copy the service username and password from Nord Account, save them again, and reconnect.')
                 if data['State'].get('Health', {}).get('Status') == 'healthy':
                     progress('Tunnel connected. Verifying isolation and public IP…')
                     try:
                         return self.check()
                     except RuntimeError:
                         progress('Waiting for the tunnel route and isolation checks…')
+                if 'AUTH_FAILED' in logs:
+                    raise AuthenticationRejected('NordVPN rejected this connection attempt.')
                 self.cancelled.wait(1)
             raise RuntimeError('VPN connection timed out. Check the service credentials and country selection.')
         except Exception:
