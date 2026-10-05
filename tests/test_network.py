@@ -103,7 +103,7 @@ class ConnectionTests(unittest.TestCase):
 
     def test_authentication_rejection_reported_without_timeout_or_log_secrets(self):
         error, calls = self.run_failed_connect('AUTH: Received control message: AUTH_FAILED\nsecret diagnostic detail')
-        self.assertIn('NordVPN rejected', error)
+        self.assertIn('NordVPN failed all 5 connection attempts', error)
         self.assertNotIn('secret diagnostic detail', error)
         self.assertEqual(sum(args[0] == 'logs' for args in calls), 5)
 
