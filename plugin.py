@@ -7,6 +7,7 @@ from .settings import Preferences
 
 class Signals(QObject):
     finished = pyqtSignal(str)
+    progress = pyqtSignal(str)
 
 class Job(QRunnable):
     def __init__(self, function):
@@ -70,10 +71,10 @@ class Plugin(GenericPlugin):
             except Exception as error:
                 widget.status.setText(str(error))
                 return
-            self.start(widget, lambda: self.network.connect(preferences, *credentials))
+            self.start(widget, lambda progress: self.network.connect(preferences, *credentials, progress=progress), cancellable=True)
         for text, callback in [('Save credentials', save_credentials), ('Connect', connect),
-                               ('Check connection', lambda: self.start(widget, self.network.check)),
-                               ('Disconnect', lambda: self.start(widget, self.network.disconnect))]:
+                               ('Check connection', lambda: self.start(widget, lambda progress: self.network.check())),
+                               ('Disconnect', lambda: self.stop(widget))]:
             button = QPushButton(text)
             button.clicked.connect(callback)
             controls.addWidget(button)
@@ -82,20 +83,41 @@ class Plugin(GenericPlugin):
         form.addRow(widget.status)
         return widget
 
-    def start(self, widget, function):
+    def stop(self, widget):
+        if self.busy:
+            self.network.cancel()
+            widget.status.setText('Cancelling the VPN connection and removing temporary credentials…')
+            widget.buttons[-1].setEnabled(False)
+        else:
+            self.start(widget, lambda progress: self.network.disconnect())
+
+    def start(self, widget, function, cancellable=False):
         if self.busy:
             return
         self.busy = True
+        if cancellable:
+            self.network.cancelled.clear()
         for button in widget.buttons:
             button.setEnabled(False)
         widget.status.setText('Working on the isolated VPN connection…')
-        job = Job(function)
+        if cancellable:
+            widget.buttons[-1].setText('Cancel connection')
+            widget.buttons[-1].setEnabled(True)
+        job = Job(lambda: function(job.signals.progress.emit))
+        def progress(text):
+            try:
+                if not self.network.cancelled.is_set():
+                    widget.status.setText(text)
+            except RuntimeError:
+                pass
+        job.signals.progress.connect(progress)
         self.jobs.add(job)
         def finished(text):
             self.busy = False
             self.jobs.discard(job)
             try:
                 widget.status.setText(text)
+                widget.buttons[-1].setText('Disconnect')
                 for button in widget.buttons:
                     button.setEnabled(True)
             except RuntimeError:

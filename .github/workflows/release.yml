@@ -9,16 +9,31 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-24.04
+    env:
+      QT_QPA_PLATFORM: offscreen
+    defaults:
+      run:
+        working-directory: plugin
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: plugin
+      - uses: actions/checkout@v4
+        with:
+          repository: swolfgang-dev/Playlite
+          path: core
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install PyQt6
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0
+      - run: python -m pip install ../core
       - run: python -m unittest discover -s tests -v
       - run: python tools/build_release.py
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
+          fi

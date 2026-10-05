@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import threading
 from .settings import Preferences
 from .credentials import validate_credentials
 
@@ -23,6 +24,14 @@ class Network:
         self.name = 'playlite-steam-downloader-vpn-' + str(os.getuid())
         self.directory = None
         self.container = None
+        self.cancelled = threading.Event()
+
+    def cancel(self):
+        self.cancelled.set()
+
+    def check_cancelled(self):
+        if self.cancelled.is_set():
+            raise RuntimeError('VPN connection cancelled. Downloads remain disabled.')
 
     def docker(self, *args, timeout=30):
         try:
@@ -32,7 +41,7 @@ class Network:
         if result.returncode:
             # Docker errors can include mount paths or user input; never report raw output.
             raise RuntimeError('Docker could not complete the isolated network operation.')
-        return result.stdout.strip()
+        return (result.stdout + result.stderr).strip() if args[0] == 'logs' else result.stdout.strip()
 
     def inspect(self):
         data = json.loads(self.docker('inspect', self.container or self.name))[0]
@@ -55,7 +64,8 @@ class Network:
             self.directory = None
         return 'Disconnected. Downloads remain disabled.'
 
-    def connect(self, preferences, username, password, deadline=90):
+    def connect(self, preferences, username, password, deadline=90, progress=lambda text: None):
+        progress('Preparing the isolated OpenVPN container…')
         preferences.validate()
         username, password = validate_credentials(username, password)
         if self.container:
@@ -83,17 +93,27 @@ class Network:
             if preferences.country:
                 args += ['-e', 'SERVER_COUNTRIES=' + preferences.country]
             self.container = self.docker(*args, IMAGE, timeout=180)
+            self.check_cancelled()
             self.inspect()
+            progress('Installing the tunnel-only worker firewall…')
             # No worker exists until the UID guard is installed successfully.
             self.docker('exec', self.container, '/bin/sh', '-c', GUARD)
-            limit = time.monotonic() + deadline
+            started = time.monotonic()
+            limit = started + deadline
             while time.monotonic() < limit:
+                self.check_cancelled()
+                elapsed = int(time.monotonic() - started)
+                progress(f'Connecting to NordVPN ({elapsed}s / {deadline}s)… Cancel is available.')
                 data = self.inspect()
                 if not data['State']['Running']:
                     raise RuntimeError('The VPN stopped before establishing a tunnel.')
+                logs = self.docker('logs', '--tail', '80', self.container)
+                if 'AUTH_FAILED' in logs:
+                    raise RuntimeError('NordVPN rejected the saved service credentials. Copy the service username and password from Nord Account, save them again, and reconnect.')
                 if data['State'].get('Health', {}).get('Status') == 'healthy':
+                    progress('Tunnel connected. Verifying isolation and public IP…')
                     return self.check()
-                time.sleep(1)
+                self.cancelled.wait(1)
             raise RuntimeError('VPN connection timed out. Check the service credentials and country selection.')
         except Exception:
             self.disconnect()
@@ -123,7 +143,7 @@ class Network:
             raise RuntimeError('IPv6 isolation is not active.')
         rules = self.docker('exec', self.container, 'iptables', '-S', 'PLAYLITE_WORKER').splitlines()
         if rules != ['-N PLAYLITE_WORKER', '-A PLAYLITE_WORKER -o tun0 -j RETURN',
-                     '-A PLAYLITE_WORKER -j REJECT']:
+                     '-A PLAYLITE_WORKER -j REJECT --reject-with icmp-port-unreachable']:
             raise RuntimeError('The worker firewall is not intact.')
         route = self.docker('exec', self.container, 'ip', 'route', 'get', '1.1.1.1')
         if 'dev tun0' not in route:

@@ -9,7 +9,7 @@ Install Docker Engine with permission to run containers and ensure `/dev/net/tun
 1. Get your **service username and password** from Nord Account's manual setup section; these are different from your normal account login.
 2. Enter them and click **Save credentials**. KWallet may ask to unlock your wallet.
 3. Optionally choose a country (for example `Canada`). Leave it empty for automatic selection across supported countries. UDP is the default; TCP is also supported.
-4. Click **Connect**. Gluetun chooses a compatible server automatically. **Check connection** verifies the tunnel, firewall, health and isolated public IP. **Disconnect** removes this plugin's container and temporary credential files.
+4. Click **Connect**. Connection progress shows elapsed time; **Cancel connection** stops the attempt and cleans up temporary credentials. Authentication rejection is reported immediately. Gluetun chooses a compatible server automatically. **Check connection** verifies the tunnel, firewall, health and isolated public IP. **Disconnect** removes this plugin's container and temporary credential files.
 
 Connection controls apply immediately. Save in Playlite settings persists only country and protocol. Existing host VPN connections and Gluetun containers are not changed. No host ports are published.
 
@@ -23,7 +23,7 @@ This preview does not autoconnect on startup. Disconnect before quitting Playlit
 
 ## Validation and next milestone
 
-Unit tests cover unsafe settings, credential injection, worker privileges, container ownership, unhealthy tunnels, and cleanup after guard installation failure. An actual Docker namespace test verifies that a reachable local TCP endpoint becomes inaccessible to the worker after installing the firewall. Live VPN authentication and tunnel reconnection still require user credentials and further tests before any downloader is enabled.
+Eleven tests cover unsafe settings, credential injection, worker privileges, container ownership, unhealthy tunnels, authentication rejection, normalized firewall rules, cancellation, temporary credential cleanup, and UI control recovery. An actual Docker namespace test verifies that a reachable local TCP endpoint becomes inaccessible to the worker after installing the firewall. Live VPN authentication and tunnel reconnection still require user credentials and further tests before any downloader is enabled.
 
 Future work: connection lifecycle recovery, cancellation, repeated drop/reconnect tests, then an isolated standalone downloader. No integration with host Steam is planned.
 
