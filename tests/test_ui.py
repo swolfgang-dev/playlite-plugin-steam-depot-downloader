@@ -71,3 +71,9 @@ class UiTests(unittest.TestCase):
         self.assertTrue(all(button.isEnabled() for button in widget.buttons))
 
 if __name__ == '__main__': unittest.main()
+
+class SharedRuntimeTests(unittest.TestCase):
+    def test_menu_and_settings_plugin_instances_share_connection(self):
+        app=QApplication.instance() or QApplication([])
+        first,second=Plugin(),Plugin()
+        self.assertIs(first.network,second.network)

@@ -104,3 +104,7 @@ class SteamSessionWallet(MoonSessionWallet):
     def __init__(self, username):
         import hashlib
         self.entry = 'Steam session ' + hashlib.sha256(username.strip().lower().encode()).hexdigest()
+
+
+class HubcapKeyWallet(MoonSessionWallet):
+    entry = 'Hubcap API key'

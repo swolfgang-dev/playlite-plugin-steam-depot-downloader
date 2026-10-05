@@ -27,6 +27,27 @@ def main():
     project = source / 'DepotDownloader' / 'DepotDownloaderMod.csproj'
     project.write_text(project.read_text().replace('<TargetFramework>net9.0</TargetFramework>', '<TargetFramework>net10.0</TargetFramework>'))
     (source / 'global.json').write_text(json.dumps({'sdk': {'version': '10.0.100', 'rollForward': 'latestFeature'}}))
+    program = source / 'DepotDownloader' / 'Program.cs'
+    login_only = '''            if (HasParameter(args, "-login-only"))
+            {
+                if (!InitializeSteam(username, password)) return 1;
+                ContentDownloader.ShutdownSteam3();
+                Console.WriteLine("Steam authentication completed.");
+                return 0;
+            }
+
+'''
+    text = program.read_text()
+    if '-login-only' not in text:
+        marker = '            var appId = GetParameter(args, "-app", ContentDownloader.INVALID_APP_ID);'
+        if marker not in text: raise RuntimeError('Pinned worker login entry point changed.')
+        program.write_text(text.replace(marker, login_only + marker))
+    accounts = source / 'DepotDownloader' / 'AccountSettingsStore.cs'
+    text = accounts.read_text()
+    text = text.replace('        static readonly IsolatedStorageFile IsolatedStorage = IsolatedStorageFile.GetUserStoreForAssembly();', '')
+    text = text.replace('IsolatedStorage.FileExists(filename)', 'File.Exists(filename)')
+    text = text.replace('IsolatedStorage.OpenFile(', 'File.Open(')
+    accounts.write_text(text)
     context = work / 'image'
     context.mkdir(exist_ok=True)
     shutil.copyfile(Path(__file__).parent / 'worker' / 'Dockerfile', context / 'Dockerfile')

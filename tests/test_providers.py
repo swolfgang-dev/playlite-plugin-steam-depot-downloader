@@ -150,3 +150,21 @@ class SteamSessionTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(stored['data']),b'test-session')
         self.assertFalse(path.exists())
         dialog.close()
+
+class SeparatedWorkflowTests(unittest.TestCase):
+    def test_menu_downloader_hides_authentication_and_settings_show_it(self):
+        from PyQt6.QtWidgets import QApplication
+        from downloader.download_dialog import DownloadDialog
+        app=QApplication.instance() or QApplication([])
+        downloader=DownloadDialog(Mock());downloader.show();app.processEvents()
+        self.assertFalse(downloader.code.isVisible());self.assertFalse(downloader.username.isVisible())
+        self.assertFalse(downloader.response.isVisible());self.assertTrue(downloader.appid.isVisible())
+        settings=DownloadDialog(Mock(),authentication=True);settings.show();app.processEvents()
+        self.assertTrue(settings.code.isVisible());self.assertTrue(settings.username.isVisible())
+        self.assertTrue(settings.response.isVisible());self.assertFalse(settings.appid.isVisible())
+        self.assertEqual(settings.start_button.text(),'Sign into Steam')
+        downloader.close();settings.close()
+
+    def test_plugin_exposes_main_menu_action(self):
+        from downloader.plugin import Plugin
+        self.assertEqual(Plugin().main_menu_actions(Mock())[0][0],'Steam Depot Downloader…')

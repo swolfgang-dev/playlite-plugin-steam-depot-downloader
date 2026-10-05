@@ -48,21 +48,28 @@ NordVPN service credentials: https://support.nordvpn.com/hc/en-us/articles/19685
 
 ### Moon providers and independent Steam login (experimental)
 
-Open **Steam Depot Downloader → Open depot downloader…** after connecting the
-VPN. The native worker image must be built using `tools/build_worker.py` first.
+Open **Playlite menu → Steam Depot Downloader…** after connecting the VPN.
+Connection preferences remain in **Settings → Plugins → General → Steam Depot
+Downloader**. Use **Manage authentication…** there for Moon login/sign-out,
+Hubcap API keys, and Steam login/forget controls. The native worker image must be built using `tools/build_worker.py` first.
 It now includes Python for isolated provider HTTP requests, as well as .NET for
-depot downloads.
+depot downloads. The worker source patch adds a login-only mode and keeps its
+account cache in the explicitly mounted private authentication directory. Main
+menu and settings plugin instances share the same VPN runtime for the app session.
 
 1. Enter the Steam App ID and select a provider. Luie uses Moon's six-character
    login-code flow (run `/login` in the LuaTools Discord → redeem the six-character code → verify magic-link token). Hubcap
    uses its own API key. Sushi and Ryuu are also supported; Ryuu's endpoint is
    HTTP, as in Moon, and does not provide transport authenticity.
-2. Fetch the pack and select a depot/manifest. Lua is parsed as data and never
+2. From the Playlite menu, fetch the pack and select a depot/manifest. Lua is parsed as data and never
    executed. ZIP traversal, symlinks, conflicting pins/keys, wrong App IDs and
    oversized packs are rejected. Manifest bytes and keys never enter host Steam.
-3. Enter the account name of the Steam account that owns the game, select an
-   existing empty destination, and download. Enter the password and Steam Guard
-   responses only when the worker prompts for them. These responses travel on
+3. In plugin settings → Manage authentication, sign into the Steam account that
+   owns the game. The dedicated login-only worker does not request game data.
+   Enter the password and Steam Guard responses when prompted there. Return to
+   the main-menu downloader, select an existing empty destination, and download
+   using that saved session. If Steam requires reauthentication, the download
+   stops and directs you back to settings. These responses travel on
    stdin, not command-line arguments. Each worker uses its own random Steam
    LogonID, ephemeral HOME/authentication cache and the VPN's guarded namespace.
 
