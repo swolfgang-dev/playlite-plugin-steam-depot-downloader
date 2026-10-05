@@ -22,7 +22,7 @@ HTTP_SCRIPT = r'''
 import base64,json,sys,urllib.request,urllib.error
 request=json.load(sys.stdin)
 try:
-    req=urllib.request.Request(request['url'], data=base64.b64decode(request['body']) if request.get('body') else None, headers={'User-Agent':'Playlite-Steam-Depot-Downloader/0.1 (Moon-compatible)', **request.get('headers', {})})
+    req=urllib.request.Request(request['url'], data=base64.b64decode(request['body']) if request.get('body') else None, headers={'User-Agent':'Playlite-Steam-Depot-Downloader/0.1 (Moon-compatible)', 'Accept-Encoding':'identity', **request.get('headers', {})})
     class Redirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             if request.get('headers') or request.get('body'):
@@ -89,7 +89,8 @@ class Transport:
         from urllib.parse import quote
         url = SOURCES[source].format(app=app, key=quote(credential, safe=''))
         headers = {'Authorization':'Bearer ' + credential} if source == 'Luie' else None
-        return parse_pack(self.request(url, headers), app)
+        data = self.request(url, headers)
+        return parse_pack(data, app)
 
 @dataclass(frozen=True)
 class Depot:
@@ -103,6 +104,17 @@ def parse_pack(data, app):
     """Never extract or execute Lua; reject traversal, duplicate names and bombs."""
     if len(data) > MAX_PACK:
         raise ValueError('Manifest pack exceeds the size limit.')
+    if data.startswith(b'\x1f\x8b'):
+        import gzip
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(data)) as compressed:
+                data = compressed.read(MAX_PACK + 1)
+            if len(data) > MAX_PACK: raise ValueError('Expanded response exceeds the size limit.')
+        except OSError as error:
+            raise ValueError('Provider returned a corrupt compressed response.') from error
+    if not zipfile.is_zipfile(io.BytesIO(data)):
+        kind = 'HTML page' if data.lstrip().lower().startswith((b'<!doctype', b'<html')) else 'JSON response' if data.lstrip().startswith((b'{', b'[')) else 'RAR archive' if data.startswith(b'Rar!') else '7z archive' if data.startswith(b'7z\xbc\xaf\x27\x1c') else 'non-ZIP response'
+        raise ValueError(f'Provider returned a {kind} instead of a ZIP manifest pack ({len(data)} bytes).')
     keys, pins, manifests, names = {}, {}, {}, set()
     app_ids = set()
     try:
@@ -116,7 +128,12 @@ def parse_pack(data, app):
                 names.add(info.filename)
                 if info.is_dir(): continue
                 if name.suffix.lower() == '.lua':
-                    text = archive.read(info).decode('utf-8-sig')
+                    lua = archive.read(info)
+                    encoding = 'utf-16' if lua.startswith((b'\xff\xfe', b'\xfe\xff')) else 'utf-8-sig'
+                    try:
+                        text = lua.decode(encoding)
+                    except UnicodeError as error:
+                        raise ValueError('A Lua file in the manifest pack has an unsupported text encoding.') from error
                     app_ids.update(map(int, re.findall(r'addappid\s*\(\s*(\d+)\s*\)', text)))
                     for depot, key in re.findall(r'addappid\s*\(\s*(\d+)\s*,\s*\d+\s*,\s*[\'"]([0-9a-fA-F]{64})[\'"]\s*\)', text):
                         depot = int(depot)

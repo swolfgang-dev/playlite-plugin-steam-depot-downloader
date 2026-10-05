@@ -92,3 +92,15 @@ class LoginDiagnosticsTests(unittest.TestCase):
                 with patch('downloader.providers.subprocess.run',return_value=response):
                     with self.assertRaisesRegex(RuntimeError,message):
                         Transport(network).request('https://lua.tools/api/auth/code/redeem',data={'code':'ABC123'})
+
+class ResponseFormatTests(unittest.TestCase):
+    def test_gzip_response_and_utf16_lua(self):
+        import gzip
+        data=pack({'a.lua':'addappid(736260)'.encode('utf-16'),'123_456.manifest':b'manifest'})
+        self.assertEqual(parse_pack(gzip.compress(data),736260)[0].id,123)
+
+    def test_non_archive_error_identifies_format_without_content(self):
+        for data,kind in [(b'{"secret":"do-not-echo"}','JSON response'),(b'<html>private</html>','HTML page')]:
+            with self.assertRaisesRegex(ValueError,kind) as error:
+                parse_pack(data,736260)
+            self.assertNotIn('do-not-echo',str(error.exception))
