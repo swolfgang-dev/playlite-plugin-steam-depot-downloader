@@ -1,5 +1,5 @@
 from PyQt6.QtCore import Qt, QCoreApplication, QObject, QRunnable, QThreadPool, QSettings, pyqtSignal
-from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout, QGroupBox, QVBoxLayout
+from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout, QGroupBox, QVBoxLayout, QSizePolicy
 from playlite.providers import GenericPlugin
 from .credentials import Wallet
 from .network import Network
@@ -66,6 +66,7 @@ class Plugin(GenericPlugin):
             layout.setContentsMargins(16, 16, 16, 16)
             layout.setHorizontalSpacing(16)
             layout.setVerticalSpacing(12)
+            layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
             layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
             heading = QLabel(f'<b>{title}</b>')
             layout.addRow(heading)
@@ -81,6 +82,8 @@ class Plugin(GenericPlugin):
         form.addRow('OpenVPN protocol', widget.protocol)
         widget.status = QLabel('Connection not checked')
         widget.status.setWordWrap(True)
+        widget.status.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        widget.status.setMinimumHeight(widget.status.fontMetrics().height() * 2 + 8)
         controls = QHBoxLayout()
         controls.setSpacing(10)
         widget.buttons = []
@@ -112,7 +115,7 @@ class Plugin(GenericPlugin):
             widget.buttons.append(button)
         controls.addStretch()
         form.addRow('Connection', controls)
-        form.addRow('Status', widget.status)
+        form.addRow(widget.status)
         widget.auth_status = {}
         form = section('Steam')
         def account_row(name):
