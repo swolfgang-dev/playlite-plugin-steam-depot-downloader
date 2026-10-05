@@ -1,0 +1,11 @@
+{
+  "id": "SteamDownloader",
+  "name": "Steam Depot Downloader",
+  "version": "0.1.0",
+  "api_version": 1,
+  "type": "generic",
+  "enabled": true,
+  "repository": "swolfgang-dev/playlite-plugin-steam-downloader",
+  "minimum_playlite_version": "0.2.40",
+  "description": "Isolated NordVPN/OpenVPN networking for Steam depot downloads. Network setup preview; game downloads are disabled."
+}
