@@ -66,3 +66,41 @@ class Wallet:
                 raise RuntimeError('Could not save VPN credentials.')
         finally:
             self.call('close', handle, False, APP)
+
+class MoonSessionWallet:
+    """Keep Moon tokens in a separate encrypted entry from NordVPN credentials."""
+    entry = 'Moon session'
+
+    def read(self):
+        wallet = Wallet(); handle = wallet.opened()
+        try:
+            value = wallet.call('readPassword', handle, FOLDER, self.entry, APP)
+            return json.loads(value) if value else None
+        finally:
+            wallet.call('close', handle, False, APP)
+
+    def save(self, session):
+        wallet = Wallet(); handle = wallet.opened()
+        try:
+            if not wallet.call('hasFolder', handle, FOLDER, APP):
+                if not wallet.call('createFolder', handle, FOLDER, APP):
+                    raise RuntimeError('Could not create the wallet folder.')
+            if wallet.call('writePassword', handle, FOLDER, self.entry, json.dumps(session), APP) != 0:
+                raise RuntimeError('Could not save the Moon session in KWallet.')
+        finally:
+            wallet.call('close', handle, False, APP)
+
+    def clear(self):
+        wallet = Wallet(); handle = wallet.opened()
+        try:
+            if wallet.call('hasEntry', handle, FOLDER, self.entry, APP):
+                if wallet.call('removeEntry', handle, FOLDER, self.entry, APP) != 0:
+                    raise RuntimeError('Could not remove the Moon session from KWallet.')
+        finally:
+            wallet.call('close', handle, False, APP)
+
+
+class SteamSessionWallet(MoonSessionWallet):
+    def __init__(self, username):
+        import hashlib
+        self.entry = 'Steam session ' + hashlib.sha256(username.strip().lower().encode()).hexdigest()

@@ -1,11 +1,13 @@
 """Explicit manifest and Steam login workflow; never uses a host Steam profile."""
 import tempfile
+import base64
 import uuid
 from pathlib import Path
-from PyQt6.QtCore import QProcess, QThreadPool
+from PyQt6.QtCore import QProcess, QThreadPool, QSettings
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,
                             QLabel, QPlainTextEdit, QFileDialog, QHBoxLayout)
 from .moon import Moon
+from .credentials import MoonSessionWallet, SteamSessionWallet
 from .providers import SOURCES, Transport, prepare_depot
 from .worker import Request, worker_args, require_download_success
 
@@ -14,7 +16,7 @@ class DownloadDialog(QDialog):
         super().__init__(parent)
         self.network = network
         self.transport = Transport(network)
-        self.moon = Moon(self.transport)
+        self.moon = Moon(self.transport, MoonSessionWallet())
         self.rows = []
         self.jobs = set()
         self.process = None
@@ -24,7 +26,7 @@ class DownloadDialog(QDialog):
         self.setWindowTitle('Steam Depot Downloader — Playlite')
         self.resize(850, 720)
         form = QFormLayout(self)
-        notice = QLabel('Downloads use a separate Steam session inside the VPN. Use an account that owns the game. Moon login lasts until this window closes. Download one selected depot at a time; the destination must be empty.')
+        notice = QLabel('Downloads use a separate Steam session inside the VPN. Use an account that owns the game. Moon login is saved in KWallet and restored automatically. Download one selected depot at a time; the destination must be empty.')
         notice.setWordWrap(True)
         form.addRow(notice)
         self.appid = QLineEdit('736260')
@@ -35,13 +37,19 @@ class DownloadDialog(QDialog):
         self.code.setPlaceholderText('Run /login in the LuaTools Discord; paste the six-character code')
         login = QPushButton('Sign into Moon'); login.clicked.connect(self.login)
         line = QHBoxLayout(); line.addWidget(self.code); line.addWidget(login)
+        logout = QPushButton('Sign out'); logout.clicked.connect(lambda: self.task(self.moon.logout, self.status.setText))
+        line.addWidget(logout)
         form.addRow('Moon login code', line)
         self.key = QLineEdit(); self.key.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow('Hubcap API key', self.key)
         self.fetch = QPushButton('Fetch manifest pack'); self.fetch.clicked.connect(self.fetch_pack)
         form.addRow(self.fetch)
         self.depot = QComboBox(); form.addRow('Depot / manifest', self.depot)
-        self.username = QLineEdit(); form.addRow('Steam account name', self.username)
+        self.username = QLineEdit(QSettings("Playlite", "SteamDownloader").value("steam_account", ""))
+        forget = QPushButton('Forget Steam login')
+        forget.clicked.connect(self.forget_steam)
+        line = QHBoxLayout(); line.addWidget(self.username); line.addWidget(forget)
+        form.addRow('Steam account name', line)
         self.destination = QLineEdit()
         browse = QPushButton('Browse…'); browse.clicked.connect(self.browse)
         line = QHBoxLayout(); line.addWidget(self.destination); line.addWidget(browse)
@@ -116,10 +124,23 @@ class DownloadDialog(QDialog):
             row = self.rows[self.depot.currentIndex()]
             self.temporary = tempfile.TemporaryDirectory(prefix='playlite-depot-input-')
             pack = Path(self.temporary.name) / 'pack'; prepare_depot(row, pack)
+            self.steam_wallet = SteamSessionWallet(self.username.text())
+            saved = self.steam_wallet.read()
+            auth = Path(self.temporary.name) / 'auth'
+            auth.mkdir(mode=0o777); auth.chmod(0o777)
+            self.auth_file = auth / 'account.config'
+            if saved is not None:
+                data = base64.b64decode(saved['data'], validate=True)
+                if len(data) > 4 * 1024 * 1024: raise ValueError('Saved Steam session exceeds the size limit.')
+                self.auth_file.write_bytes(data); self.auth_file.chmod(0o666)
             # Keep incomplete output in a separate staging folder, never overwrite files.
             stage = destination / '.playlite-download'
             stage.mkdir(mode=0o777); stage.chmod(0o777)
             args = worker_args(self.network, Request(app, row.id, row.manifest), stage, pack=pack, username=self.username.text())
+            args[args.index('--workdir') + 1] = '/auth'
+            index = args.index('playlite-depot-worker:test')
+            args[index:index] = ['--mount', f'type=bind,src={auth},dst=/auth']
+            args.append('-remember-password')
             self.container = 'playlite-download-' + uuid.uuid4().hex
             args[1:1] = ['--name', self.container]
             # Output must remain writable by the desktop user after UID 65534 exits.
@@ -132,6 +153,7 @@ class DownloadDialog(QDialog):
                 try: stage.rmdir()  # Only remove an empty staging folder created by this attempt.
                 except OSError: pass
             self.status.setText(str(error)); return
+        QSettings('Playlite', 'SteamDownloader').setValue('steam_account', self.username.text().strip())
         self.busy = True; self.fetch.setEnabled(False); self.start_button.setEnabled(False)
         self.cancel.setText('Cancel download')
         self.output = ''; self.log.clear()
@@ -164,9 +186,25 @@ class DownloadDialog(QDialog):
             require_download_success(code, self.output)
             self.status.setText('Depot download completed and validated. Files are in .playlite-download; automatic installation is not enabled yet.')
         except Exception as error: self.status.setText(str(error) + ' Incomplete files are retained for inspection.')
-        if self.temporary: self.temporary.cleanup(); self.temporary = None
+        if self.temporary:
+            try:
+                if self.auth_file.is_file():
+                    data = self.auth_file.read_bytes()
+                    if len(data) > 4 * 1024 * 1024: raise ValueError('Steam session exceeds the size limit.')
+                    self.steam_wallet.save({'data':base64.b64encode(data).decode()})
+            except Exception:
+                self.status.setText(self.status.text() + ' Steam login could not be saved in KWallet.')
+            finally:
+                self.temporary.cleanup(); self.temporary = None
         self.busy = False; self.fetch.setEnabled(True); self.start_button.setEnabled(True)
         self.cancel.setText('Close')
+
+    def forget_steam(self):
+        if self.busy: return
+        if not self.username.text().strip():
+            self.status.setText('Enter the Steam account name whose saved login you want to remove.'); return
+        username = self.username.text()
+        self.task(lambda: SteamSessionWallet(username).clear(), lambda _: self.status.setText('Saved Steam login removed from KWallet.'))
 
     def close_or_cancel(self):
         if self.process and self.process.state() != QProcess.ProcessState.NotRunning:

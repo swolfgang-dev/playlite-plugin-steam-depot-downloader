@@ -104,3 +104,49 @@ class ResponseFormatTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,kind) as error:
                 parse_pack(data,736260)
             self.assertNotIn('do-not-echo',str(error.exception))
+
+class SavedSessionTests(unittest.TestCase):
+    def test_saved_session_restored_without_network_when_valid(self):
+        import time
+        store=Mock();store.read.return_value={'access_token':'access','refresh_token':'refresh','expires_at':time.time()+3600}
+        transport=Mock();moon=Moon(transport,store)
+        self.assertEqual(moon.token(),'access');transport.request.assert_not_called()
+        moon.logout();store.clear.assert_called_once();self.assertIsNone(moon.session)
+
+    def test_expired_session_refresh_is_saved(self):
+        store=Mock();store.read.return_value={'access_token':'old','refresh_token':'refresh','expires_at':0}
+        transport=Mock();transport.request.return_value=json.dumps({'access_token':'new','refresh_token':'rotated','expires_in':3600}).encode()
+        self.assertEqual(Moon(transport,store).token(),'new')
+        self.assertEqual(store.save.call_args.args[0]['refresh_token'],'rotated')
+
+    def test_wallet_failure_does_not_claim_login_persisted(self):
+        store=Mock();store.save.side_effect=RuntimeError('Wallet unavailable')
+        transport=Mock();transport.request.side_effect=[b'{"token":"verification"}',b'{"access_token":"access","refresh_token":"refresh"}']
+        moon=Moon(transport,store)
+        with self.assertRaisesRegex(RuntimeError,'Wallet unavailable'):moon.login('ABC123')
+        self.assertIsNone(moon.session)
+
+class SteamSessionTests(unittest.TestCase):
+    def test_sessions_are_separate_for_each_account_and_from_moon(self):
+        from downloader.credentials import SteamSessionWallet, MoonSessionWallet
+        self.assertNotEqual(SteamSessionWallet('one').entry,SteamSessionWallet('two').entry)
+        self.assertEqual(SteamSessionWallet(' ONE ').entry,SteamSessionWallet('one').entry)
+        self.assertNotEqual(SteamSessionWallet('one').entry,MoonSessionWallet.entry)
+
+    def test_worker_session_is_saved_then_plaintext_staging_is_removed(self):
+        import tempfile,base64
+        from PyQt6.QtWidgets import QApplication
+        from downloader.download_dialog import DownloadDialog
+        from pathlib import Path
+        app=QApplication.instance() or QApplication([])
+        dialog=DownloadDialog(Mock())
+        dialog.process=Mock();dialog.process.readAllStandardOutput.return_value=b''
+        dialog.temporary=tempfile.TemporaryDirectory()
+        path=Path(dialog.temporary.name)
+        dialog.auth_file=path/'account.config';dialog.auth_file.write_bytes(b'test-session')
+        dialog.steam_wallet=Mock()
+        dialog.finished(1)
+        stored=dialog.steam_wallet.save.call_args.args[0]
+        self.assertEqual(base64.b64decode(stored['data']),b'test-session')
+        self.assertFalse(path.exists())
+        dialog.close()

@@ -66,8 +66,13 @@ depot downloads.
    stdin, not command-line arguments. Each worker uses its own random Steam
    LogonID, ephemeral HOME/authentication cache and the VPN's guarded namespace.
 
-Moon sessions refresh automatically while this window stays open; they are not
-persisted and are discarded when it closes. Steam credentials are not retained.
+Moon sessions are encrypted in KWallet, restored on the next provider request,
+and refreshed automatically. Sign out removes the saved Moon session. Steam's
+reusable login token is also encrypted in KWallet, separately for each account;
+the Steam password is never saved. A temporary private authentication directory
+is mounted only for that worker, then removed after its session is returned to
+KWallet. Forget Steam login removes the saved account session. Steam Guard may
+still be required when Steam invalidates or expires a session.
 Provider requests fail closed if the VPN checks fail; authenticated HTTP redirects
 are rejected so provider credentials cannot be forwarded to another service.
 
