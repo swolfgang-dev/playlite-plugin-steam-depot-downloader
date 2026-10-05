@@ -120,6 +120,7 @@ class Plugin(GenericPlugin):
         form = section('Steam')
         def account_row(name):
             line = QHBoxLayout()
+            line.setSpacing(10)
             status = QLabel('Status not checked')
             status.setWordWrap(True)
             widget.auth_status[name] = status
