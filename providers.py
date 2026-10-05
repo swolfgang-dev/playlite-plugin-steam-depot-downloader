@@ -98,6 +98,7 @@ class Depot:
     manifest: int
     data: bytes = field(repr=False)
     key: str | None = field(default=None, repr=False)
+    name: str = ''
 
 
 def parse_pack(data, app):
@@ -117,6 +118,7 @@ def parse_pack(data, app):
         raise ValueError(f'Provider returned a {kind} instead of a ZIP manifest pack ({len(data)} bytes).')
     keys, pins, manifests, names = {}, {}, {}, set()
     app_ids = set()
+    depot_names = {}
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             if len(archive.infolist()) > 4096 or sum(info.file_size for info in archive.infolist()) > MAX_PACK:
@@ -134,6 +136,9 @@ def parse_pack(data, app):
                         text = lua.decode(encoding)
                     except UnicodeError as error:
                         raise ValueError('A Lua file in the manifest pack has an unsupported text encoding.') from error
+                    for line in text.splitlines():
+                        label = re.search(r'addappid\s*\(\s*(\d+).*?\)\s*--\s*(.+)$', line)
+                        if label: depot_names[int(label[1])] = label[2].strip()[:200]
                     app_ids.update(map(int, re.findall(r'addappid\s*\(\s*(\d+)\s*(?:\)|,)', text)))
                     for depot, key in re.findall(r'addappid\s*\(\s*(\d+)\s*,\s*\d+\s*,\s*[\'"]([0-9a-fA-F]{64})[\'"]\s*\)', text):
                         depot = int(depot)
@@ -159,7 +164,7 @@ def parse_pack(data, app):
         if not 0 < depot < 2**32 or not 0 < manifest < 2**64 or not blob:
             raise ValueError('Invalid depot or manifest in pack.')
         if depot in pins and pins[depot] != manifest: continue
-        rows.append(Depot(depot, manifest, blob, keys.get(depot)))
+        rows.append(Depot(depot, manifest, blob, keys.get(depot), depot_names.get(depot, '')))
     if not rows: raise ValueError('No usable binary depot manifests were found in this pack.')
     return rows
 

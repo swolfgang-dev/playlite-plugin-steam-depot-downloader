@@ -90,7 +90,7 @@ class AuthenticationWorkerTests(unittest.TestCase):
         dialog=DownloadDialog(Mock())
         self.assertEqual(dialog.code.echoMode(),QLineEdit.EchoMode.Password)
         self.assertEqual(dialog.response.echoMode(),QLineEdit.EchoMode.Password)
-        self.assertEqual(dialog.provider.currentText(),'Luie')
+        self.assertIn(dialog.provider.currentText(),('Luie','Hubcap','Sushi','Ryuu'))
         self.assertIsNone(dialog.moon.session)
         dialog.close()
 

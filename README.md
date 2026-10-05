@@ -67,7 +67,7 @@ menu and settings plugin instances share the same VPN runtime for the app sessio
 3. In plugin settings → Manage authentication, sign into the Steam account that
    owns the game. The dedicated login-only worker does not request game data.
    Enter the password and Steam Guard responses when prompted there. Return to
-   the main-menu downloader, select an existing empty destination, and download
+   the main-menu downloader, select an empty or new destination, and download
    using that saved session. If Steam requires reauthentication, the download
    stops and directs you back to settings. These responses travel on
    stdin, not command-line arguments. Each worker uses its own random Steam
@@ -83,13 +83,24 @@ still be required when Steam invalidates or expires a session.
 Provider requests fail closed if the VPN checks fail; authenticated HTTP redirects
 are rejected so provider credentials cannot be forwarded to another service.
 
-This is currently a **single-depot test workflow**, not a complete installation
-method. Files remain in the chosen folder's `.playlite-download` staging folder;
-no automatic installation/library entry or multi-depot orchestration is enabled.
-Cancellation removes the named worker and retains incomplete output. A real
-Steam-authenticated Linux download was verified end to end with Baba Is You
-(App ID 736260, depot 736263), using a supplied Hubcap binary manifest and a saved
-Steam session through the existing isolated VPN. Game launching has not been tested.
+The downloader searches Steam by name or App ID, selects the game and fetches its
+manifest pack automatically. Linux content is selected by default when the provider
+labels identify a Linux depot; other content remains selectable. **Advanced** holds
+the provider, manual fetch and depot/manifest IDs. **Show details** opens the raw log.
+Progress shows bytes, percentage, average transferred speed and an estimated time.
+
+Set **Default location** under plugin settings → Downloads. The downloader suggests
+`<default location>/<game name>` and creates missing directories when Download is
+pressed. Existing nonempty folders are rejected. Files download into hidden staging,
+then validated output is promoted with atomic no-overwrite renames. Failures retain
+staging. **Open folder** opens the completed destination; **Add to Playlite** lets you
+choose an executable and review the normal add-game editor before saving.
+
+This remains a **single-depot workflow**: multi-depot orchestration is not implemented.
+Steam-authenticated Linux downloads and finalization were verified with Baba Is You
+(App ID 736260, depot 736263), using a Hubcap binary manifest and a saved Steam session.
+Game launching has not been tested. The downloader reuses an existing isolated VPN;
+otherwise it connects with saved credentials and disconnects that connection on close.
 
 Connection failures caused by authentication rejection, tunnel timeout or a stopped
 gateway are retried up to five total attempts, with waits of 5, 10, 20 and 30

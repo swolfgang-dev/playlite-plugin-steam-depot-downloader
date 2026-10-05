@@ -1,5 +1,6 @@
+from pathlib import Path
 from PyQt6.QtCore import QTimer, Qt, QCoreApplication, QObject, QRunnable, QThreadPool, QSettings, pyqtSignal
-from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout, QGroupBox, QVBoxLayout, QSizePolicy, QDialog
+from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout, QGroupBox, QVBoxLayout, QSizePolicy, QDialog, QFileDialog
 from playlite.providers import GenericPlugin
 from .credentials import Wallet
 from .network import Network
@@ -184,6 +185,18 @@ class Plugin(GenericPlugin):
                     widget.auth_status[name].setText(('Login confirmed this session' if name != 'Hubcap' else 'API key accepted this session') if saved and getattr(self.network, name.lower() + '_confirmed', False) else text)
                 except Exception:
                     widget.auth_status[name].setText('Unlock KWallet to check saved login')
+        form = section('Downloads')
+        widget.download_root = QLineEdit(self.settings().value('download_root', str(Path.home() / 'Downloads')))
+        browse_root = QPushButton('Browse…')
+        def choose_root():
+            folder = QFileDialog.getExistingDirectory(widget, 'Default download location', widget.download_root.text())
+            if folder: widget.download_root.setText(folder)
+        browse_root.clicked.connect(choose_root)
+        root_line = QHBoxLayout(); root_line.setSpacing(10)
+        root_line.addWidget(widget.download_root); root_line.addWidget(browse_root)
+        form.addRow('Default location', root_line)
+        hint = QLabel('Each game downloads into its own folder here. Missing folders are created automatically.')
+        hint.setWordWrap(True); form.addRow(hint)
         check = QPushButton('Refresh login status')
         check.clicked.connect(refresh_status)
         footer = QHBoxLayout()
@@ -274,6 +287,9 @@ class Plugin(GenericPlugin):
     def save_settings(self, widget):
         preferences = Preferences(widget.country.text().strip(), widget.protocol.currentText()).validate()
         settings = self.settings()
+        root=Path(widget.download_root.text().strip() or str(Path.home()/'Downloads')).expanduser()
+        if not root.is_absolute():raise ValueError('Choose an absolute default download location.')
+        settings.setValue('download_root',str(root))
         settings.setValue('country', preferences.country)
         settings.setValue('protocol', preferences.protocol)
         settings.sync()

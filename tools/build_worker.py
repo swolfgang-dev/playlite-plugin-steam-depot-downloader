@@ -51,6 +51,11 @@ def main():
     downloader = source / 'DepotDownloader' / 'ContentDownloader.cs'
     text = downloader.read_text()
     text = text.replace('DepotManifest.LoadFromFile(Config.ManifestFile)', 'DepotManifest.Deserialize(File.ReadAllBytes(Config.ManifestFile))')
+    if 'PLAYLITE_PROGRESS' not in text:
+        for amount in ('depotDownloadCounter.sizeDownloaded', 'sizeDownloaded'):
+            marker = 'Console.WriteLine("{0,6:#00.00}% {1}", (' + amount + ' / (float)depotDownloadCounter.completeDownloadSize) * 100.0f, fileFinalPath);'
+            telemetry = 'Console.WriteLine("PLAYLITE_PROGRESS {0} {1} {2}", ' + amount + ', depotDownloadCounter.completeDownloadSize, depotDownloadCounter.depotBytesCompressed);'
+            text = text.replace(marker, marker + '\n                ' + telemetry)
     downloader.write_text(text)
     context = work / 'image'
     context.mkdir(exist_ok=True)

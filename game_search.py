@@ -26,6 +26,13 @@ class GameSearch:
             if len(rows) == RESULT_LIMIT: break
         return rows
 
+    def details(self, app):
+        response = json.loads(self.transport.request('https://store.steampowered.com/api/appdetails?' + urlencode({'appids':app,'l':'english','cc':'CA'})))
+        entry = response.get(str(app), {})
+        if not entry.get('success') or not isinstance(entry.get('data', {}).get('name'), str):
+            raise ValueError('Steam could not find that App ID.')
+        return {'id':app,'name':entry['data']['name']}
+
     def cover(self, app):
         if app in self.cache: return self.cache[app]
         if type(app) != int or not 0 < app < 2**32: raise ValueError('Invalid Steam App ID.')

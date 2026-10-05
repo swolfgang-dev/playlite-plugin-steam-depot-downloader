@@ -210,10 +210,13 @@ class GameSelectionTests(unittest.TestCase):
         from unittest.mock import Mock
         app=QApplication.instance() or QApplication([])
         dialog=DownloadDialog(Mock())
-        dialog.rows=['old manifest'];dialog.depot.addItem('old')
+        from downloader.providers import Depot
+        dialog.rows=[Depot(1,2,b'old')];dialog.depot.addItem('old')
         item=QListWidgetItem('Baba Is You')
         item.setData(Qt.ItemDataRole.UserRole,{'id':736260,'name':'Baba Is You'})
-        dialog.select_game(item)
+        with patch.object(dialog,'fetch_pack') as fetch, patch.object(dialog,'load_selected_cover'):
+            dialog.select_game(item)
+            fetch.assert_called_once()
         self.assertEqual(dialog.appid.text(),'736260')
         self.assertEqual(dialog.rows,[])
         self.assertEqual(dialog.depot.count(),0)
@@ -241,3 +244,36 @@ class EmailGuardPromptTests(unittest.TestCase):
             self.assertIn('email',dialog.status.text())
             self.assertEqual(dialog.response.placeholderText(),'Steam Guard code')
             dialog.process=None;dialog.close()
+
+class CleanDownloaderTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app=QApplication.instance() or QApplication([])
+
+    def test_fetched_manifests_default_to_linux_and_enable_download(self):
+        from downloader.download_dialog import DownloadDialog
+        from downloader.providers import Depot
+        from unittest.mock import Mock
+        dialog=DownloadDialog(Mock())
+        rows=[Depot(736261,1,b'x',name='Baba Is You Content'),Depot(736263,2,b'x',name='Baba Is You Linux')]
+        with patch.object(dialog,'task',side_effect=lambda operation,done:done(rows)),patch('downloader.download_dialog.QSettings'):
+            dialog.fetch_pack()
+        self.assertEqual(dialog.depot.currentText(),'Linux')
+        self.assertEqual(dialog.depot.currentIndex(),1)
+        self.assertTrue(dialog.start_button.isEnabled())
+        self.assertIn('736263',dialog.depot_info.text())
+        dialog.close()
+
+    def test_progress_uses_worker_bytes_and_keeps_log_hidden(self):
+        import time
+        from downloader.download_dialog import DownloadDialog
+        from unittest.mock import Mock
+        dialog=DownloadDialog(Mock())
+        dialog.process=Mock();dialog.started_at=time.monotonic()-10
+        dialog.process.readAllStandardOutput.return_value=b'PLAYLITE_PROGRESS 5000000 10000000 4000000\n'
+        dialog.read_output()
+        self.assertEqual(dialog.progress_bar.value(),500)
+        self.assertIn('5.0 / 10.0 MB',dialog.progress_info.text())
+        self.assertIn('MB/s',dialog.progress_info.text())
+        self.assertFalse(dialog.log.isVisible())
+        dialog.process=None;dialog.close()
