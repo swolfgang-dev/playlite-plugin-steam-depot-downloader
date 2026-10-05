@@ -11,7 +11,11 @@ class Moon:
         self.session = None
 
     def _post(self, url, data, headers=None):
-        return json.loads(self.transport.request(url, {'Content-Type':'application/json', **(headers or {})}, data))
+        stage = 'Discord code redemption' if '/code/redeem' in url else 'Moon session verification' if '/verify' in url else 'Moon session refresh'
+        try:
+            return json.loads(self.transport.request(url, {'Content-Type':'application/json', **(headers or {})}, data))
+        except RuntimeError as error:
+            raise RuntimeError(f'{stage}: {error}') from None
 
     def _accept(self, session):
         if not all(isinstance(session.get(key), str) and session[key] and not re.search(r'[\r\n\0]', session[key]) for key in ('access_token', 'refresh_token')):

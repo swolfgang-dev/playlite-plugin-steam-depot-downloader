@@ -72,3 +72,23 @@ class AuthenticationWorkerTests(unittest.TestCase):
         self.assertEqual(dialog.provider.currentText(),'Luie')
         self.assertIsNone(dialog.moon.session)
         dialog.close()
+
+class LoginDiagnosticsTests(unittest.TestCase):
+    def test_error_reports_login_stage_without_code(self):
+        transport=Mock();transport.request.side_effect=RuntimeError('Provider blocked request')
+        with self.assertRaisesRegex(RuntimeError,'Discord code redemption: Provider blocked request') as error:
+            Moon(transport).login('ABC123')
+        self.assertNotIn('ABC123',str(error.exception))
+
+    def test_cloudflare_and_invalid_code_have_distinct_messages(self):
+        import tempfile
+        from types import SimpleNamespace
+        from downloader.network import Network
+        for reason, message in [('browser_challenge','browser challenge'),('invalid_code','rejected the login code'),('expired_code','expired or was already used'),('invalid_api_key','public API client key')]:
+            network=Network();network.container='gateway';network.check=Mock()
+            with tempfile.TemporaryDirectory() as directory:
+                network.directory=directory
+                response=SimpleNamespace(returncode=0,stdout=json.dumps({'status':403,'body':'','reason':reason}))
+                with patch('downloader.providers.subprocess.run',return_value=response):
+                    with self.assertRaisesRegex(RuntimeError,message):
+                        Transport(network).request('https://lua.tools/api/auth/code/redeem',data={'code':'ABC123'})

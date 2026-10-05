@@ -22,7 +22,7 @@ HTTP_SCRIPT = r'''
 import base64,json,sys,urllib.request,urllib.error
 request=json.load(sys.stdin)
 try:
-    req=urllib.request.Request(request['url'], data=base64.b64decode(request['body']) if request.get('body') else None, headers=request.get('headers', {}))
+    req=urllib.request.Request(request['url'], data=base64.b64decode(request['body']) if request.get('body') else None, headers={'User-Agent':'Playlite-Steam-Depot-Downloader/0.1 (Moon-compatible)', **request.get('headers', {})})
     class Redirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             if request.get('headers') or request.get('body'):
@@ -35,7 +35,9 @@ try:
         if len(body)>67108864: raise ValueError('Response exceeds limit')
         print(json.dumps({'status':response.status,'body':base64.b64encode(body).decode()}))
 except urllib.error.HTTPError as error:
-    print(json.dumps({'status':error.code,'body':''}))
+    body=error.read(4096).decode('utf-8',errors='replace').lower()
+    reason='invalid_api_key' if 'invalid api key' in body else 'expired_code' if 'expired' in body else 'invalid_code' if 'invalid' in body and 'code' in body else 'browser_challenge' if 'cloudflare' in body or 'just a moment' in body or 'error code: 1010' in body else ''
+    print(json.dumps({'status':error.code,'body':'','reason':reason}))
 except Exception:
     print(json.dumps({'status':0,'body':''}))
 '''
@@ -61,6 +63,15 @@ class Transport:
             response = json.loads(result.stdout)
             status = response['status']
             if status != 200:
+                reason = response.get('reason', '')
+                if reason == 'invalid_api_key':
+                    raise RuntimeError('LuaTools rejected its public API client key; the provider login configuration needs updating.')
+                if reason == 'browser_challenge':
+                    raise RuntimeError('The provider blocked the isolated HTTP worker with a browser challenge.')
+                if reason == 'expired_code':
+                    raise RuntimeError('The login code expired or was already used. Generate a fresh Discord /login code.')
+                if reason == 'invalid_code':
+                    raise RuntimeError('The provider rejected the login code.')
                 if status in (401, 403):
                     raise RuntimeError('Provider authentication was rejected. Sign in again or check the provider key.')
                 raise RuntimeError(f'Provider request failed (HTTP {status or "connection error"}).')
