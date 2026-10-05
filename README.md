@@ -31,7 +31,17 @@ Live validation on 5-Oct-2026 passed all nineteen checks using a separate NordVP
 
 Run the offline checks with `python tools/check_isolation.py` and `python tools/check_cleanup.py`. To explicitly authorize a separate live test connection using the current gateway's read-only secret mount, run `python tools/check_vpn_failures.py --live`; optionally select `--country "United States"`. Add `--crash` to include the verified forced OpenVPN process-crash test. The live test never prints credential contents and cleans up its own containers.
 
-Next milestone: an isolated standalone downloader. No integration with host Steam is planned.
+## Native worker prototype
+
+The experimental `worker.py` constructs a separate unprivileged downloader container only after VPN readiness checks pass. It mounts a caller-created staging folder and optional read-only prepared manifest/key inputs. Its home and authentication cache live in an ephemeral tmpfs; host Steam files are never mounted. The plugin UI still has no enabled download action.
+
+`tools/build_worker.py --work /tmp/playlite-worker-build` builds the pinned DepotDownloaderMod source revision `c0f62fb7f020087f36ae76adfc51fde1446af344` with .NET SDK 10 and a self-contained Linux/musl runtime. Use `--dotnet /path/to/dotnet` if necessary. The work directory preserves the GPL upstream source, license and .NET 10 project changes. The Docker image adds libgcc/libstdc++ and runs as UID 65534.
+
+The Baba Is You test (App ID 736260) successfully connected anonymously to Steam inside the VPN namespace. The requested depot key returned `AccessDenied`, with zero bytes from zero depots. Upstream returned process exit code zero despite that failure; the worker explicitly rejects this false success.
+
+Baba's Moon pack was not cached in the VM. Its public configured sources did not provide a pack, and the saved Moon access token was expired. Session renewal returned HTTP 401. A fresh Moon login/manifest pack, or a separately authenticated Steam session, is required before the actual small-file download test can proceed. No game content has been downloaded yet. Twenty-five unit/UI tests pass, including worker isolation and false-success handling.
+
+Next milestone: import the authorized manifest pack, download and verify a small file, then build the user-facing download workflow. No integration with host Steam is planned.
 
 Gluetun documentation: https://github.com/qdm12/gluetun-wiki
 NordVPN service credentials: https://support.nordvpn.com/hc/en-us/articles/19685514639633
