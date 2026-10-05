@@ -85,6 +85,7 @@ class Plugin(GenericPlugin):
         widget.protocol = QComboBox()
         widget.protocol.addItems(['udp', 'tcp'])
         widget.protocol.setCurrentText(self.settings().value('protocol', 'udp'))
+        widget.protocol.setFixedWidth(widget.protocol.sizeHint().width())
         form.addRow('OpenVPN protocol', widget.protocol)
         widget.status = QLabel('Connection not checked')
         widget.status.setWordWrap(True)
