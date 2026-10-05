@@ -81,6 +81,14 @@ class DownloadDialog(QDialog):
             self.setWindowTitle('Steam Depot Downloader authentication — Playlite')
             self.start_button.setText('Sign into Steam')
             notice.setText('Manage Moon, Hubcap and Steam authentication here. Login sessions are saved in KWallet. Connect the VPN in plugin settings first.')
+            if authentication == 'steam':
+                for row in auth_rows[:3]:
+                    form.setRowVisible(row, False)
+                self.setWindowTitle('Steam login — Playlite')
+                notice.setText('Sign into your separate Steam download session. Your saved login stays in KWallet. Connect NordVPN first.')
+                self.resize(680, 440)
+                self.log.setMaximumHeight(160)
+                self.response.setPlaceholderText('Password or Steam Guard code')
         else:
             notice.setText('Select a game, provider, depot and download folder. VPN connection and saved authentication are configured in plugin settings.')
 
@@ -127,6 +135,7 @@ class DownloadDialog(QDialog):
         except Exception as error:
             self.status.setText(str(error)); return
         def done(rows):
+            if source == 'Hubcap': self.network.hubcap_confirmed = True
             self.rows = rows; self.pack_app = app
             self.depot.clear()
             for row in rows: self.depot.addItem(f'{row.id} / {row.manifest}')
@@ -152,7 +161,7 @@ class DownloadDialog(QDialog):
             self.steam_wallet = SteamSessionWallet(self.username.text())
             saved = self.steam_wallet.read()
             if not self.authentication and saved is None:
-                raise ValueError('Sign into Steam in plugin settings → Manage authentication before downloading.')
+                raise ValueError('Sign into Steam in plugin settings → Steam login before downloading.')
             auth = Path(self.temporary.name) / 'auth'
             auth.mkdir(mode=0o777); auth.chmod(0o777)
             self.auth_file = auth / 'account.config'
@@ -201,6 +210,15 @@ class DownloadDialog(QDialog):
         self.output += text
         self.log.insertPlainText(text)
         self.log.ensureCursorVisible()
+        if self.authentication:
+            if 'Please enter your 2 factor auth code' in text:
+                self.status.setText('Enter the Steam Guard code from your authenticator app below.')
+            elif 'Please enter the authentication code' in text:
+                self.status.setText('Enter the Steam Guard code sent to your email below.')
+            elif 'Enter account password' in text:
+                self.status.setText('Enter your Steam password below, then choose Send securely.')
+            elif 'Use the Steam Mobile App' in text:
+                self.status.setText('Approve this sign-in in the Steam mobile app. Waiting for confirmation…')
         prompts = ('Enter account password', 'Please enter your 2 factor auth code', 'Please enter the authentication code')
         if not self.authentication and not getattr(self, 'auth_needed', False) and any(prompt in self.output for prompt in prompts):
             self.auth_needed = True
@@ -221,11 +239,12 @@ class DownloadDialog(QDialog):
             if self.authentication:
                 if code: raise RuntimeError('Steam authentication failed or was cancelled. See the login log.')
                 if not self.auth_file.is_file(): raise RuntimeError('Steam did not create a reusable session. See the login log.')
+                self.network.steam_confirmed = True
                 self.status.setText('Steam authentication completed.')
             else:
                 require_download_success(code, self.output)
                 self.status.setText('Depot download completed and validated. Files are in .playlite-download; automatic installation is not enabled yet.')
-        except Exception as error: self.status.setText(str(error) + ' Incomplete files are retained for inspection.')
+        except Exception as error: self.status.setText(str(error) + ('' if self.authentication else ' Incomplete files are retained for inspection.'))
         if self.temporary:
             try:
                 if self.auth_file.is_file():
@@ -239,13 +258,14 @@ class DownloadDialog(QDialog):
         self.busy = False; self.fetch.setEnabled(True); self.start_button.setEnabled(True)
         self.cancel.setText('Close')
         if getattr(self, 'auth_needed', False):
-            self.status.setText('Steam requires a new login. Open plugin settings → Manage authentication and sign in again. Incomplete files were retained.')
+            self.status.setText('Steam requires a new login. Open plugin settings → Steam login and sign in again. Incomplete files were retained.')
 
     def forget_steam(self):
         if self.busy: return
         if not self.username.text().strip():
             self.status.setText('Enter the Steam account name whose saved login you want to remove.'); return
         username = self.username.text()
+        self.network.steam_confirmed = False
         self.task(lambda: SteamSessionWallet(username).clear(), lambda _: self.status.setText('Saved Steam login removed from KWallet.'))
 
     def close_or_cancel(self):

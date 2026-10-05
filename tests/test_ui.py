@@ -77,3 +77,25 @@ class SharedRuntimeTests(unittest.TestCase):
         app=QApplication.instance() or QApplication([])
         first,second=Plugin(),Plugin()
         self.assertIs(first.network,second.network)
+
+class AuthenticationLayoutTests(unittest.TestCase):
+    def test_main_settings_account_order_and_saved_status(self):
+        from PyQt6.QtWidgets import QLabel
+        app = QApplication.instance() or QApplication([])
+        with patch('downloader.credentials.MoonSessionWallet.read', return_value=None):
+            widget = Plugin().create_settings()
+        self.assertEqual(list(widget.auth_status), ['Steam', 'Moon', 'Hubcap'])
+        self.assertEqual(widget.auth_status['Moon'].text(), 'Not signed in')
+        self.assertFalse(hasattr(widget, 'password'))
+
+    def test_steam_popup_only_shows_steam_authentication(self):
+        from downloader.download_dialog import DownloadDialog
+        from unittest.mock import Mock
+        app = QApplication.instance() or QApplication([])
+        dialog = DownloadDialog(Mock(), authentication='steam')
+        dialog.show(); app.processEvents()
+        self.assertFalse(dialog.code.isVisible())
+        self.assertFalse(dialog.key.isVisible())
+        self.assertTrue(dialog.username.isVisible())
+        self.assertTrue(dialog.response.isVisible())
+        dialog.close()

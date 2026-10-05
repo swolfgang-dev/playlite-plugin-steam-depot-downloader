@@ -58,6 +58,7 @@ class Plugin(GenericPlugin):
         note = QLabel('Uses a dedicated Docker/OpenVPN container; host Steam is not accessed. The depot downloader is an experimental, explicit test workflow.')
         note.setWordWrap(True)
         form.addRow(note)
+        form.addRow(QLabel('<b>NordVPN</b>'))
         widget.country = QLineEdit(self.settings().value('country', ''))
         widget.country.setPlaceholderText('Automatic — NordVPN recommended server')
         form.addRow('Server country', widget.country)
@@ -65,27 +66,13 @@ class Plugin(GenericPlugin):
         widget.protocol.addItems(['udp', 'tcp'])
         widget.protocol.setCurrentText(self.settings().value('protocol', 'udp'))
         form.addRow('OpenVPN protocol', widget.protocol)
-        widget.username = QLineEdit()
-        widget.password = QLineEdit()
-        widget.password.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow('NordVPN service username', widget.username)
-        form.addRow('NordVPN service password', widget.password)
-        info = QLabel('<a href="https://support.nordvpn.com/hc/en-us/articles/19685514639633">Find service credentials in Nord Account</a>. Your regular account password is not used. Saved credentials use KWallet.')
-        info.setOpenExternalLinks(True)
-        info.setWordWrap(True)
-        form.addRow(info)
-        widget.status = QLabel('Disconnected. Downloads disabled.')
+        widget.status = QLabel('Connection not checked. Downloads require an isolated VPN.')
         widget.status.setWordWrap(True)
         controls = QHBoxLayout()
         widget.buttons = []
         def save_credentials():
-            try:
-                Wallet().save(widget.username.text(), widget.password.text())
-                widget.password.clear()
-                widget.username.clear()
-                widget.status.setText('Service credentials saved in KWallet.')
-            except Exception as error:
-                widget.status.setText(str(error))
+            from .authentication_dialog import CredentialDialog
+            CredentialDialog('NordVPN', self.network, widget).exec()
         def connect():
             try:
                 preferences = Preferences(widget.country.text().strip(), widget.protocol.currentText()).validate()
@@ -94,7 +81,7 @@ class Plugin(GenericPlugin):
                 widget.status.setText(str(error))
                 return
             self.start(widget, lambda progress: self.network.connect(preferences, *credentials, progress=progress), cancellable=True)
-        for text, callback in [('Save credentials', save_credentials), ('Connect', connect),
+        for text, callback in [('NordVPN login…', save_credentials), ('Connect', connect),
                                ('Check connection', lambda: self.start(widget, lambda progress: self.network.check())),
                                ('Disconnect', lambda: self.stop(widget))]:
             button = QPushButton(text)
@@ -103,13 +90,47 @@ class Plugin(GenericPlugin):
             widget.buttons.append(button)
         form.addRow(controls)
         form.addRow(widget.status)
-        download = QPushButton("Manage authentication…")
-        def open_downloader():
-            from .download_dialog import DownloadDialog
-            dialog = DownloadDialog(self.network, widget, authentication=True)
-            dialog.exec()
-        download.clicked.connect(open_downloader)
-        form.addRow(download)
+        widget.auth_status = {}
+        form.addRow(QLabel('<b>Steam</b>'))
+        def account_row(name):
+            line = QHBoxLayout()
+            status = QLabel('Status not checked')
+            status.setWordWrap(True)
+            widget.auth_status[name] = status
+            button = QPushButton(f'{name} login…')
+            def open_login():
+                if name == 'Steam':
+                    from .download_dialog import DownloadDialog
+                    dialog = DownloadDialog(self.network, widget, authentication='steam')
+                else:
+                    from .authentication_dialog import CredentialDialog
+                    dialog = CredentialDialog(name, self.network, widget)
+                dialog.exec()
+                refresh_status()
+            button.clicked.connect(open_login)
+            line.addWidget(status, 1); line.addWidget(button)
+            form.addRow(name, line)
+        account_row('Steam')
+        form.addRow(QLabel('<b>Manifest providers</b>'))
+        account_row('Moon')
+        account_row('Hubcap')
+        def refresh_status():
+            from .credentials import MoonSessionWallet, SteamSessionWallet, HubcapKeyWallet
+            account = self.settings().value('steam_account', '')
+            stores = {'Moon': MoonSessionWallet(), 'Hubcap': HubcapKeyWallet(),
+                      'Steam': SteamSessionWallet(account)}
+            for name, store in stores.items():
+                try:
+                    saved = store.read() if name != 'Steam' or account else None
+                    text = ('API key saved; accepted when a manifest fetch succeeds' if name == 'Hubcap'
+                            else 'Login saved' + (f' for {account}' if name == 'Steam' else '')) if saved else 'Not signed in'
+                    widget.auth_status[name].setText(('Login confirmed this session' if name != 'Hubcap' else 'API key accepted this session') if saved and getattr(self.network, name.lower() + '_confirmed', False) else text)
+                except Exception:
+                    widget.auth_status[name].setText('Unlock KWallet to check saved login')
+        check = QPushButton('Check saved logins')
+        check.clicked.connect(refresh_status)
+        form.addRow(check)
+        refresh_status()
         return widget
 
     def stop(self, widget):
