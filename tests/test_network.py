@@ -13,6 +13,10 @@ from downloader.settings import Preferences
 from downloader.credentials import validate_credentials
 
 class Tests(unittest.TestCase):
+    def setUp(self):
+        self.selection = patch.object(Network, "choose_server", return_value=None)
+        self.selection.start(); self.addCleanup(self.selection.stop)
+
     def test_check_without_session_reports_reconnect_before_docker(self):
         network = Network()
         with patch.object(network, "docker") as docker:
@@ -82,6 +86,10 @@ class Tests(unittest.TestCase):
         self.assertNotIn('secretuser', repr(calls))
 
 class ConnectionTests(unittest.TestCase):
+    def setUp(self):
+        self.selection = patch.object(Network, "choose_server", return_value=None)
+        self.selection.start(); self.addCleanup(self.selection.stop)
+
     def run_failed_connect(self, logs='', progress=lambda network, text: None):
         network = Network()
         calls = []

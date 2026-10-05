@@ -59,7 +59,7 @@ class Plugin(GenericPlugin):
         note.setWordWrap(True)
         form.addRow(note)
         widget.country = QLineEdit(self.settings().value('country', ''))
-        widget.country.setPlaceholderText('Automatic — any supported country')
+        widget.country.setPlaceholderText('Automatic — NordVPN recommended server')
         form.addRow('Server country', widget.country)
         widget.protocol = QComboBox()
         widget.protocol.addItems(['udp', 'tcp'])

@@ -94,3 +94,11 @@ Connection failures caused by authentication rejection, tunnel timeout or a stop
 gateway are retried up to five total attempts, with waits of 5, 10, 20 and 30
 seconds. Each attempt has its own 90-second tunnel readiness timeout. Cancellation
 also interrupts retry waits. Unsafe configuration and Docker errors are not retried.
+
+Automatic selection queries NordVPN's public recommendation API for the chosen
+OpenVPN protocol, optionally restricted to the selected country. It follows the
+returned ranking and checks that the hostname exists in the pinned Gluetun
+server catalogue. Retries skip previously attempted recommended servers. If the
+API is unavailable or all compatible recommendations are exhausted, selection
+falls back to Gluetun's compatible-server pool. Only public VPN bootstrap metadata
+is requested outside the tunnel; provider requests and Steam traffic stay isolated.

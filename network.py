@@ -11,6 +11,7 @@ import sys
 from .constants import IMAGE, LABEL, WORKER_LABEL
 from .guardian import process_token, safe_directory
 from .settings import Preferences
+from .recommendations import recommended_servers
 from .credentials import validate_credentials
 
 GUARD = '''set -eu
@@ -90,6 +91,7 @@ class Network:
         return 'Disconnected. Downloads remain disabled.'
 
     def connect(self, preferences, username, password, deadline=90, progress=lambda text: None):
+        self.attempted_servers = set()
         delays = (5, 10, 20, 30)
         for attempt in range(5):
             self.check_cancelled()
@@ -103,6 +105,26 @@ class Network:
                 progress(f'NordVPN attempt {attempt + 1}/5 failed. Waiting {delay}s before attempt {attempt + 2}/5… Cancel is available.')
                 self.cancelled.wait(delay)
                 self.check_cancelled()
+
+    def choose_server(self, preferences, progress):
+        progress('Asking NordVPN for recommended OpenVPN servers…')
+        try:
+            ranked = recommended_servers(preferences)
+            if not hasattr(self, 'compatible_servers'):
+                listing = self.docker('run', '--rm', '--network', 'none', IMAGE, 'format-servers', '-nordvpn')
+                import re
+                self.compatible_servers = set(re.findall(r'`([a-z]{2}\d+\.nordvpn\.com)` \| openvpn', listing))
+            attempted = getattr(self, 'attempted_servers', set())
+            server = next((host for host in ranked if host in self.compatible_servers and host not in attempted), None)
+            if server:
+                attempted.add(server)
+                self.attempted_servers = attempted
+                progress(f'NordVPN recommends {server}. Connecting…')
+                return server
+        except (OSError, ValueError, RuntimeError):
+            pass
+        progress('Recommendations unavailable or exhausted. Using Gluetun compatible-server selection…')
+        return None
 
     def _connect_once(self, preferences, username, password, deadline=90, progress=lambda text: None):
         progress('Preparing the isolated OpenVPN container…')
@@ -136,6 +158,10 @@ class Network:
                     '-e', 'OPENVPN_PROTOCOL=' + preferences.protocol,
                     '-e', 'FIREWALL=on', '-e', 'FIREWALL_OUTBOUND_SUBNETS=',
                     '-e', 'DNS_ADDRESS=127.0.0.1']
+            server = self.choose_server(preferences, progress)
+            self.check_cancelled()
+            if server:
+                args += ['-e', 'SERVER_HOSTNAMES=' + server]
             if preferences.country:
                 args += ['-e', 'SERVER_COUNTRIES=' + preferences.country]
             self.container = self.docker(*args, IMAGE, timeout=180)
