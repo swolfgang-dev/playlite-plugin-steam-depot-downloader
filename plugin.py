@@ -1,5 +1,5 @@
-from PyQt6.QtCore import QCoreApplication, QObject, QRunnable, QThreadPool, QSettings, pyqtSignal
-from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout
+from PyQt6.QtCore import Qt, QCoreApplication, QObject, QRunnable, QThreadPool, QSettings, pyqtSignal
+from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout, QGroupBox, QVBoxLayout
 from playlite.providers import GenericPlugin
 from .credentials import Wallet
 from .network import Network
@@ -54,11 +54,22 @@ class Plugin(GenericPlugin):
 
     def create_settings(self, parent=None):
         widget = QWidget(parent)
-        form = QFormLayout(widget)
-        note = QLabel('Uses a dedicated Docker/OpenVPN container; host Steam is not accessed. The depot downloader is an experimental, explicit test workflow.')
+        page = QVBoxLayout(widget)
+        page.setContentsMargins(0, 8, 0, 0)
+        page.setSpacing(16)
+        note = QLabel('Downloads use an isolated VPN and a separate Steam session.')
         note.setWordWrap(True)
-        form.addRow(note)
-        form.addRow(QLabel('<b>NordVPN</b>'))
+        page.addWidget(note)
+        def section(title):
+            box = QGroupBox(title)
+            layout = QFormLayout(box)
+            layout.setContentsMargins(16, 20, 16, 16)
+            layout.setHorizontalSpacing(16)
+            layout.setVerticalSpacing(12)
+            layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+            page.addWidget(box)
+            return layout
+        form = section('NordVPN')
         widget.country = QLineEdit(self.settings().value('country', ''))
         widget.country.setPlaceholderText('Automatic — NordVPN recommended server')
         form.addRow('Server country', widget.country)
@@ -66,7 +77,7 @@ class Plugin(GenericPlugin):
         widget.protocol.addItems(['udp', 'tcp'])
         widget.protocol.setCurrentText(self.settings().value('protocol', 'udp'))
         form.addRow('OpenVPN protocol', widget.protocol)
-        widget.status = QLabel('Connection not checked. Downloads require an isolated VPN.')
+        widget.status = QLabel('Connection not checked')
         widget.status.setWordWrap(True)
         controls = QHBoxLayout()
         widget.buttons = []
@@ -87,17 +98,20 @@ class Plugin(GenericPlugin):
             button = QPushButton(text)
             button.clicked.connect(callback)
             controls.addWidget(button)
+            button.setMinimumWidth(button.sizeHint().width())
             widget.buttons.append(button)
+        controls.addStretch()
         form.addRow(controls)
         form.addRow(widget.status)
         widget.auth_status = {}
-        form.addRow(QLabel('<b>Steam</b>'))
+        form = section('Steam')
         def account_row(name):
             line = QHBoxLayout()
             status = QLabel('Status not checked')
             status.setWordWrap(True)
             widget.auth_status[name] = status
-            button = QPushButton(f'{name} login…')
+            button = QPushButton('Manage login…' if name != 'Hubcap' else 'Manage API key…')
+            button.setFixedWidth(max(180, button.sizeHint().width()))
             def open_login():
                 if name == 'Steam':
                     from .download_dialog import DownloadDialog
@@ -109,9 +123,13 @@ class Plugin(GenericPlugin):
                 refresh_status()
             button.clicked.connect(open_login)
             line.addWidget(status, 1); line.addWidget(button)
-            form.addRow(name, line)
+            if name != 'Steam':
+                label = QLabel(name)
+                label.setFixedWidth(90)
+                line.insertWidget(0, label)
+            form.addRow(line)
         account_row('Steam')
-        form.addRow(QLabel('<b>Manifest providers</b>'))
+        form = section('Manifest providers')
         account_row('Moon')
         account_row('Hubcap')
         def refresh_status():
@@ -122,14 +140,17 @@ class Plugin(GenericPlugin):
             for name, store in stores.items():
                 try:
                     saved = store.read() if name != 'Steam' or account else None
-                    text = ('API key saved; accepted when a manifest fetch succeeds' if name == 'Hubcap'
+                    text = ('API key saved; verification pending' if name == 'Hubcap'
                             else 'Login saved' + (f' for {account}' if name == 'Steam' else '')) if saved else 'Not signed in'
                     widget.auth_status[name].setText(('Login confirmed this session' if name != 'Hubcap' else 'API key accepted this session') if saved and getattr(self.network, name.lower() + '_confirmed', False) else text)
                 except Exception:
                     widget.auth_status[name].setText('Unlock KWallet to check saved login')
-        check = QPushButton('Check saved logins')
+        check = QPushButton('Refresh login status')
         check.clicked.connect(refresh_status)
-        form.addRow(check)
+        footer = QHBoxLayout()
+        footer.addStretch()
+        footer.addWidget(check)
+        page.addLayout(footer)
         refresh_status()
         return widget
 
