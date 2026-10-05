@@ -365,16 +365,20 @@ class DownloadDialog(QDialog):
 
     def read_output(self):
         text = bytes(self.process.readAllStandardOutput()).decode('utf-8', errors='replace')
+        prompt_text = self.output[-180:] + text
         self.output += text
         self.log.insertPlainText(text)
         self.log.ensureCursorVisible()
-        if self.authentication:
-            if 'Please enter your 2 factor auth code' in text or 'Please enter the authentication code' in text:
-                self.status.setText('Enter your Steam Guard code from your authenticator app.' if '2 factor' in text else 'Enter the Steam Guard code sent to your email.')
+        import re
+        code_prompt = re.search(r'please enter (?:your |the )?(?:2 factor )?(?:auth(?:entication)? )?code', prompt_text, re.IGNORECASE)
+        if self.authentication and text:
+            if code_prompt:
+                self.status.setText('Enter the Steam Guard code sent to your email.' if 'email' in prompt_text[code_prompt.start():].lower() else 'Enter your Steam Guard code from your authenticator app.')
                 if self.authentication == 'steam':
                     self.steam_form.setRowVisible(self.guard_row, True)
+                    self.response.setPlaceholderText('Steam Guard code')
                     self.response.setFocus()
-            elif 'Enter account password' in text:
+            elif 'Enter account password' in prompt_text:
                 if self.authentication == 'steam' and self.pending_password:
                     self.process.write((self.pending_password + '\n').encode())
                     self.pending_password = ''
@@ -383,12 +387,12 @@ class DownloadDialog(QDialog):
                     if self.authentication == 'steam':
                         self.steam_form.setRowVisible(self.guard_row, True)
                         self.response.setPlaceholderText('Steam password')
-            elif 'Use the Steam Mobile App' in text:
+            elif 'Use the Steam Mobile App' in prompt_text:
                 self.status.setText('Approve this sign-in in the Steam mobile app. Waiting for approval…')
                 if self.authentication == 'steam':
                     self.steam_form.setRowVisible(self.guard_row, False)
         prompts = ('Enter account password', 'Please enter your 2 factor auth code', 'Please enter the authentication code')
-        if not self.authentication and not getattr(self, 'auth_needed', False) and any(prompt in self.output for prompt in prompts):
+        if not self.authentication and not getattr(self, 'auth_needed', False) and (code_prompt or any(prompt in self.output for prompt in prompts)):
             self.auth_needed = True
             self.close_or_cancel()
 

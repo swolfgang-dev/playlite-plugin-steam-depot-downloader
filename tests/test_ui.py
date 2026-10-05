@@ -218,3 +218,26 @@ class GameSelectionTests(unittest.TestCase):
         self.assertEqual(dialog.rows,[])
         self.assertEqual(dialog.depot.count(),0)
         dialog.close()
+
+class EmailGuardPromptTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app=QApplication.instance() or QApplication([])
+
+    def test_current_email_prompt_reveals_code_field_even_when_split(self):
+        from downloader.download_dialog import DownloadDialog
+        from unittest.mock import Mock
+        for chunks in ([b'STEAM GUARD! Please enter the auth code sent to the email at example.com:'],
+                       [b'STEAM GUARD! Please enter the auth ', b'code sent to the email at example.com:']):
+            dialog=DownloadDialog(Mock(),authentication='steam')
+            dialog.show();self.app.processEvents()
+            dialog.process=Mock()
+            for chunk in chunks:
+                dialog.process.readAllStandardOutput.return_value=chunk
+                dialog.read_output()
+            self.app.processEvents()
+            self.assertTrue(dialog.response.isVisible())
+            self.assertTrue(dialog.send.isVisible())
+            self.assertIn('email',dialog.status.text())
+            self.assertEqual(dialog.response.placeholderText(),'Steam Guard code')
+            dialog.process=None;dialog.close()
