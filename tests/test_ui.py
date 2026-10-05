@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import time
 import unittest
+from unittest.mock import patch
 from PyQt6.QtWidgets import QApplication
 
 if 'downloader' not in sys.modules:
@@ -25,6 +26,21 @@ class UiTests(unittest.TestCase):
             time.sleep(.01)
         self.assertFalse(plugin.busy)
         self.app.processEvents()
+
+    def test_shutdown_disconnects_an_idle_session(self):
+        plugin = Plugin()
+        with patch.object(plugin.network, 'disconnect') as disconnect:
+            plugin.shutdown()
+            disconnect.assert_called_once()
+        self.assertTrue(plugin.network.cancelled.is_set())
+
+    def test_shutdown_cancels_inflight_connection(self):
+        plugin = Plugin()
+        plugin.busy = True
+        with patch.object(plugin.network, 'disconnect') as disconnect:
+            plugin.shutdown()
+            disconnect.assert_not_called()
+        self.assertTrue(plugin.network.cancelled.is_set())
 
     def test_worker_failure_restores_controls_and_reports_error(self):
         plugin = Plugin()

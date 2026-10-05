@@ -38,6 +38,25 @@ class Tests(unittest.TestCase):
         with patch.object(network, 'inspect', return_value={'State': {'Running':True, 'Health': {'Status':'unhealthy'}}}), patch.object(network, 'docker') as docker:
             with self.assertRaises(RuntimeError): network.check()
             docker.assert_not_called()
+    def test_reconnect_refuses_an_unsafe_previous_secret_mount(self):
+        network = Network()
+        data = {'Mounts': [{'Destination': '/run/secrets', 'Source': '/home', 'RW': True}]}
+        with patch.object(network, 'docker', return_value='old-id') as docker, patch.object(network, 'inspect', return_value=data):
+            with self.assertRaisesRegex(RuntimeError, 'unsafe credential mount'):
+                network.connect(Preferences(), 'user', 'password')
+            self.assertFalse(any(call.args[0] == 'rm' for call in docker.call_args_list))
+        self.assertIsNone(network.container)
+
+    def test_disconnect_removes_workers_before_gateway(self):
+        network = Network()
+        network.container = 'gateway-id'
+        def docker(*args, **kwargs):
+            return 'worker-id' if args[0] == 'ps' else ''
+        with patch.object(network, 'docker', side_effect=docker) as calls, patch.object(network, 'inspect'):
+            network.disconnect()
+        removed = [call.args for call in calls.call_args_list if call.args[0] == 'rm']
+        self.assertEqual(removed, [('rm', '-f', 'worker-id'), ('rm', '-f', 'gateway-id')])
+
     def test_guard_failure_removes_container_and_secrets(self):
         network = Network()
         calls = []
@@ -66,7 +85,7 @@ class ConnectionTests(unittest.TestCase):
             if args[0] == 'logs': return logs
             return ''
         state = {'State': {'Running': True, 'Health': {'Status': 'unhealthy'}}}
-        with patch.object(network, 'docker', side_effect=docker), patch.object(network, 'inspect', return_value=state):
+        with patch.object(network, 'docker', side_effect=docker), patch.object(network, 'inspect', return_value=state), patch.object(network, 'start_guardian'):
             with self.assertRaises(RuntimeError) as error:
                 network.connect(Preferences(), 'test-service-user', 'test-service-password', deadline=5,
                                 progress=lambda text: progress(network, text))
@@ -84,6 +103,20 @@ class ConnectionTests(unittest.TestCase):
     def test_cancel_interrupts_connection_and_cleans_up(self):
         error, calls = self.run_failed_connect(progress=lambda network, text: network.cancel() if text.startswith('Connecting') else None)
         self.assertIn('cancelled', error)
+
+    def test_stale_health_waits_for_route_and_isolation_readiness(self):
+        network = Network()
+        def docker(*args, **kwargs):
+            if args[0] == 'ps': return ''
+            if args[0] == 'run': return 'container-id'
+            return ''
+        state = {'State': {'Running': True, 'Health': {'Status': 'healthy'}}}
+        progress = []
+        with patch.object(network, 'docker', side_effect=docker), patch.object(network, 'inspect', return_value=state), patch.object(network, 'start_guardian'), patch.object(network, 'check', side_effect=[RuntimeError('route not ready'), 'VPN ready']) as check, patch.object(network.cancelled, 'wait'):
+            self.assertEqual(network.connect(Preferences(), 'test-user', 'test-pass', deadline=5, progress=progress.append), 'VPN ready')
+            self.assertEqual(check.call_count, 2)
+            self.assertTrue(any('Waiting for the tunnel route' in text for text in progress))
+            network.disconnect()
 
     def test_kernel_normalized_firewall_rules_are_accepted(self):
         network = Network()

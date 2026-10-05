@@ -19,13 +19,19 @@ The gateway uses a pinned Gluetun image and a dedicated Docker bridge namespace.
 
 Service credentials are stored in KWallet. OpenVPN receives private, read-only mounted secret files rather than command-line arguments or environment values. These files are removed on disconnect or connection failure. While connected, host root and Docker administrators can access them, as they can access the container itself.
 
-This preview does not autoconnect on startup. Disconnect before quitting Playlite. If Playlite terminates unexpectedly, its dedicated container may remain; a subsequent connection refuses to overwrite it. Inspect and remove `playlite-steam-downloader-vpn-<your numeric UID>` through Docker before reconnecting. Runtime credential files can also remain after an abrupt termination.
+This preview does not autoconnect on startup. Normal Playlite exit disconnects the session. An independent helper monitors the owning process and removes this plugin's workers, gateway and temporary credential files after a crash. It retries if Docker is temporarily unavailable. KWallet credentials remain saved. Closing to the system tray keeps Playlite and its VPN running.
+
+An explicit **Connect** can replace a leftover connection belonging to this plugin and user, after validating its image, network settings, and private read-only credential mount. It refuses foreign or unsafe containers. Docker gateway restarts invalidate the namespace of existing workers; a new worker must be created after restoring the guard and passing readiness checks.
 
 ## Validation and next milestone
 
-Eleven tests cover unsafe settings, credential injection, worker privileges, container ownership, unhealthy tunnels, authentication rejection, normalized firewall rules, cancellation, temporary credential cleanup, and UI control recovery. An actual Docker namespace test verifies that a reachable local TCP endpoint becomes inaccessible to the worker after installing the firewall. Live VPN authentication and tunnel reconnection still require user credentials and further tests before any downloader is enabled.
+Twenty-one unit/UI tests cover credentials, container ownership, permissions, normalized firewall rules, authentication errors, cancellation, stale health, worker ordering, shutdown and cleanup safety. The offline Docker tests cover TCP and DNS/UDP blocking, tunnel loss, forced fallback routes, tunnel recovery, namespace replacement, IPv6, and actual parent-process crash cleanup. GitHub CI runs those credential-free Docker tests before building releases.
 
-Future work: connection lifecycle recovery, cancellation, repeated drop/reconnect tests, then an isolated standalone downloader. No integration with host Steam is planned.
+Live validation passed sixteen checks using a separate NordVPN connection: diagnostic HTTPS and DNS, blocked LAN access, stopped-tunnel and forced-fallback blocking, OpenVPN stop/start recovery, gateway replacement, stale-worker blocking, and a fresh worker on the recovered gateway. The user's original connection stayed healthy. Further forced OpenVPN crash/repeated reconnect attempts encountered intermittent NordVPN authentication rejection; automatic crash recovery is not yet fully verified. Game downloads remain disabled.
+
+Run the offline checks with `python tools/check_isolation.py` and `python tools/check_cleanup.py`. To explicitly authorize a separate live test connection using the current gateway's read-only secret mount, run `python tools/check_vpn_failures.py --live`; optionally select `--country "United States"`. Add `--crash` to include the not-yet-repeatable forced OpenVPN crash test. The live test never prints credential contents and cleans up its own containers.
+
+Future work: repeatable automatic crash recovery, then an isolated standalone downloader. No integration with host Steam is planned.
 
 Gluetun documentation: https://github.com/qdm12/gluetun-wiki
 NordVPN service credentials: https://support.nordvpn.com/hc/en-us/articles/19685514639633

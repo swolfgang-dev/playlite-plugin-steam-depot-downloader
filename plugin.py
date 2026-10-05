@@ -1,4 +1,4 @@
-from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QSettings, pyqtSignal
+from PyQt6.QtCore import QCoreApplication, QObject, QRunnable, QThreadPool, QSettings, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout
 from playlite.providers import GenericPlugin
 from .credentials import Wallet
@@ -26,6 +26,17 @@ class Plugin(GenericPlugin):
         self.network = Network()
         self.busy = False
         self.jobs = set()
+        app = QCoreApplication.instance()
+        if app:
+            app.aboutToQuit.connect(self.shutdown)
+
+    def shutdown(self):
+        self.network.cancel()
+        if not self.busy:
+            try:
+                self.network.disconnect()
+            except RuntimeError:
+                pass  # The independent guardian retries cleanup after process exit.
 
     def settings(self):
         return QSettings('Playlite', 'SteamDownloader')

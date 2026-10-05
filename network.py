@@ -7,11 +7,12 @@ import subprocess
 import tempfile
 import time
 import threading
+import sys
+from .constants import IMAGE, LABEL, WORKER_LABEL
+from .guardian import process_token, safe_directory
 from .settings import Preferences
 from .credentials import validate_credentials
 
-IMAGE = 'qmcgaw/gluetun@sha256:2733bb22b27e3efa7a9f2cef9057ec12791b8b225793fcd3dbfd0508404dfc25'
-LABEL = 'io.playlite.steam-downloader'
 GUARD = '''set -eu
 iptables -N PLAYLITE_WORKER
 iptables -A PLAYLITE_WORKER -o tun0 -j RETURN
@@ -25,6 +26,13 @@ class Network:
         self.directory = None
         self.container = None
         self.cancelled = threading.Event()
+        self.guardian = None
+
+    def start_guardian(self):
+        self.guardian = subprocess.Popen([sys.executable, str(Path(__file__).with_name('guardian.py')),
+            str(os.getpid()), process_token(os.getpid()), self.container, self.directory],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
 
     def cancel(self):
         self.cancelled.set()
@@ -57,11 +65,20 @@ class Network:
     def disconnect(self):
         if self.container:
             self.inspect()
+            workers = self.docker('ps', '-aq', '--filter', 'label=' + WORKER_LABEL + '=' + self.container)
+            for worker in workers.split():
+                self.docker('rm', '-f', worker)
             self.docker('rm', '-f', self.container)
             self.container = None
         if self.directory:
             shutil.rmtree(self.directory)
             self.directory = None
+        if self.guardian:
+            try:
+                self.guardian.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            self.guardian = None
         return 'Disconnected. Downloads remain disabled.'
 
     def connect(self, preferences, username, password, deadline=90, progress=lambda text: None):
@@ -70,18 +87,24 @@ class Network:
         username, password = validate_credentials(username, password)
         if self.container:
             self.disconnect()
-        # Refuse name collisions, including orphaned containers, rather than deleting them.
+        # An explicit Connect replaces only this user's validated plugin container.
         existing = self.docker('ps', '-aq', '--filter', 'name=^/' + self.name + '$')
         if existing:
-            raise RuntimeError('A previous VPN container still exists. Remove it after confirming it is no longer in use.')
+            data = self.inspect()
+            secret = next((mount for mount in data['Mounts'] if mount['Destination'] == '/run/secrets'), None)
+            if not secret or secret['RW'] or not safe_directory(secret['Source']):
+                raise RuntimeError('The previous VPN container has an unsafe credential mount. Refusing to remove it.')
+            self.container, self.directory = data['Id'], secret['Source']
+            progress('Removing the previous plugin connection before reconnecting…')
+            self.disconnect()
         self.directory = tempfile.mkdtemp(prefix='playlite-vpn-', dir=os.environ.get('XDG_RUNTIME_DIR') or None)
         os.chmod(self.directory, 0o700)
-        for name, value in [('openvpn_user', username), ('openvpn_password', password)]:
-            path = Path(self.directory) / name
-            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            with os.fdopen(descriptor, 'w') as stream:
-                stream.write(value + '\n')
         try:
+            for name, value in [('openvpn_user', username), ('openvpn_password', password)]:
+                path = Path(self.directory) / name
+                descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                with os.fdopen(descriptor, 'w') as stream:
+                    stream.write(value + '\n')
             args = ['run', '-d', '--name', self.name, '--label', LABEL + '=' + str(os.getuid()),
                     '--network', 'bridge', '--cap-add', 'NET_ADMIN', '--device', '/dev/net/tun',
                     '--sysctl', 'net.ipv6.conf.all.disable_ipv6=1',
@@ -98,6 +121,7 @@ class Network:
             progress('Installing the tunnel-only worker firewall…')
             # No worker exists until the UID guard is installed successfully.
             self.docker('exec', self.container, '/bin/sh', '-c', GUARD)
+            self.start_guardian()
             started = time.monotonic()
             limit = started + deadline
             while time.monotonic() < limit:
@@ -112,7 +136,10 @@ class Network:
                     raise RuntimeError('NordVPN rejected the saved service credentials. Copy the service username and password from Nord Account, save them again, and reconnect.')
                 if data['State'].get('Health', {}).get('Status') == 'healthy':
                     progress('Tunnel connected. Verifying isolation and public IP…')
-                    return self.check()
+                    try:
+                        return self.check()
+                    except RuntimeError:
+                        progress('Waiting for the tunnel route and isolation checks…')
                 self.cancelled.wait(1)
             raise RuntimeError('VPN connection timed out. Check the service credentials and country selection.')
         except Exception:
@@ -126,6 +153,7 @@ class Network:
         path.write_text('nameserver 103.86.96.100\nnameserver 103.86.99.100\n')
         path.chmod(0o644)
         return ['run', '--rm', '--network', 'container:' + self.container,
+                '--label', WORKER_LABEL + '=' + self.container,
                 '--user', '65534:65534', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                 '--read-only', '--pids-limit', '32', '--memory', '64m',
                 '--mount', f'type=bind,src={path},dst=/etc/resolv.conf,readonly',
