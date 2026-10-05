@@ -87,8 +87,9 @@ This is currently a **single-depot test workflow**, not a complete installation
 method. Files remain in the chosen folder's `.playlite-download` staging folder;
 no automatic installation/library entry or multi-depot orchestration is enabled.
 Cancellation removes the named worker and retains incomplete output. A real
-Steam-authenticated game-file download still requires interactive login and has
-not yet been verified end to end.
+Steam-authenticated Linux download was verified end to end with Baba Is You
+(App ID 736260, depot 736263), using a supplied Hubcap binary manifest and a saved
+Steam session through the existing isolated VPN. Game launching has not been tested.
 
 Connection failures caused by authentication rejection, tunnel timeout or a stopped
 gateway are retried up to five total attempts, with waits of 5, 10, 20 and 30
@@ -102,3 +103,10 @@ server catalogue. Retries skip previously attempted recommended servers. If the
 API is unavailable or all compatible recommendations are exhausted, selection
 falls back to Gluetun's compatible-server pool. Only public VPN bootstrap metadata
 is requested outside the tunnel; provider requests and Steam traffic stay isolated.
+
+In the downloader, enter a game name in **Game / App ID** to search the same Steam
+store search endpoint used by Steam Metadata. Select a result to fill its App ID.
+Search waits 650 ms after typing, requires three characters, and shows at most eight
+results with cover artwork. Numeric IDs bypass search. Covers are cached for up
+to 32 games per dialog; changing the query stops the old cover queue. Search and
+artwork requests use the verified isolated VPN transport.

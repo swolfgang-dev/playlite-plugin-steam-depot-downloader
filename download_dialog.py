@@ -3,9 +3,10 @@ import tempfile
 import base64
 import uuid
 from pathlib import Path
-from PyQt6.QtCore import QProcess, QThreadPool, QSettings
+from PyQt6.QtCore import QProcess, QThreadPool, QSettings, QTimer, Qt, QSize
+from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,
-                            QLabel, QPlainTextEdit, QFileDialog, QHBoxLayout, QWidget, QVBoxLayout)
+                            QLabel, QPlainTextEdit, QFileDialog, QHBoxLayout, QWidget, QVBoxLayout, QListWidget, QListWidgetItem)
 from .moon import Moon
 from .credentials import MoonSessionWallet, SteamSessionWallet, HubcapKeyWallet
 from .providers import SOURCES, Transport, prepare_depot
@@ -32,7 +33,30 @@ class DownloadDialog(QDialog):
         notice.setWordWrap(True)
         form.addRow(notice)
         self.appid = QLineEdit('736260')
-        form.addRow('Steam App ID', self.appid); download_rows.append(self.appid)
+        self.appid.setPlaceholderText('Steam App ID or game name')
+        search_button = QPushButton('Search')
+        search_button.clicked.connect(self.search_games)
+        search_line = QHBoxLayout(); search_line.setSpacing(10)
+        search_line.addWidget(self.appid); search_line.addWidget(search_button)
+        form.addRow('Game / App ID', search_line); download_rows.append(search_line)
+        self.search_results = QListWidget()
+        self.search_results.setIconSize(QSize(54,81))
+        self.search_results.setMaximumHeight(230)
+        self.search_results.itemClicked.connect(self.select_game)
+        self.search_results.itemActivated.connect(self.select_game)
+        form.addRow(self.search_results); download_rows.append(self.search_results)
+        self.search_results.hide()
+        from .game_search import GameSearch
+        self.game_search = GameSearch(self.transport)
+        self.search_timer = QTimer(self); self.search_timer.setSingleShot(True)
+        self.search_timer.setInterval(650)
+        self.search_timer.timeout.connect(self.search_games)
+        self.appid.textEdited.connect(self.queue_search)
+        self.appid.returnPressed.connect(self.search_games)
+        self.search_generation = 0
+        self.searching = False
+        self.search_items = {}
+
         self.provider = QComboBox(); self.provider.addItems(SOURCES)
         form.addRow('Manifest provider', self.provider); download_rows.append(self.provider)
         self.code = QLineEdit(); self.code.setEchoMode(QLineEdit.EchoMode.Password)
@@ -134,6 +158,73 @@ class DownloadDialog(QDialog):
                     control.show()
         else:
             notice.setText('Select a game, provider, depot and download folder. VPN connection and saved authentication are configured in plugin settings.')
+
+    def queue_search(self, query):
+        self.search_generation += 1
+        self.search_timer.stop()
+        self.search_results.clear(); self.search_results.hide()
+        if len(query.strip()) >= 3 and not query.strip().isdecimal():
+            self.search_timer.start()
+
+    def search_games(self):
+        query = self.appid.text().strip()
+        if self.authentication or self.busy or len(query) < 3 or query.isdecimal(): return
+        if self.searching:
+            self.search_timer.start()
+            return
+        from .plugin import Job
+        generation = self.search_generation
+        self.searching = True
+        result = []
+        def operation():
+            result.extend(self.game_search.search(query))
+            return ''
+        job = Job(operation); self.jobs.add(job)
+        def done(message):
+            self.jobs.discard(job); self.searching = False
+            if generation != self.search_generation or query != self.appid.text().strip(): return
+            if message:
+                self.status.setText(message); return
+            self.search_results.clear(); self.search_items = {}
+            for row in result:
+                item = QListWidgetItem(f"{row['name']}\nApp ID: {row['id']}")
+                item.setData(Qt.ItemDataRole.UserRole, row)
+                item.setSizeHint(QSize(0, 90))
+                self.search_results.addItem(item); self.search_items[row['id']] = item
+            self.search_results.setVisible(bool(result))
+            self.status.setText(f'{len(result)} matching games. Select a game to use its App ID.' if result else 'No matching games found.')
+            self.load_search_covers(result, generation)
+        job.signals.finished.connect(done)
+        self.status.setText('Searching Steam…')
+        QThreadPool.globalInstance().start(job)
+
+    def load_search_covers(self, rows, generation):
+        from .plugin import Job
+        images = {}
+        def operation():
+            for row in rows:
+                if generation != self.search_generation: break
+                images[row['id']] = self.game_search.cover(row['id'])
+            return ''
+        job = Job(operation); self.jobs.add(job)
+        def done(_):
+            self.jobs.discard(job)
+            if generation != self.search_generation: return
+            for app, data in images.items():
+                pixmap = QPixmap()
+                if data and pixmap.loadFromData(data) and app in self.search_items:
+                    self.search_items[app].setIcon(QIcon(pixmap))
+        job.signals.finished.connect(done)
+        QThreadPool.globalInstance().start(job)
+
+    def select_game(self, item):
+        row = item.data(Qt.ItemDataRole.UserRole)
+        self.search_generation += 1
+        self.search_timer.stop()
+        self.appid.setText(str(row['id']))
+        self.search_results.clear(); self.search_results.hide()
+        self.rows = []; self.depot.clear()
+        self.status.setText(f"{row['name']} selected. Fetch its manifest pack to continue.")
 
     def connect_vpn(self):
         from .credentials import Wallet
@@ -368,6 +459,8 @@ class DownloadDialog(QDialog):
     def closeEvent(self, event):
         if self.busy:
             self.close_or_cancel(); event.ignore(); return
+        self.search_generation += 1
+        self.search_timer.stop()
         self.moon.session = None
         self.rows = []
         self.key.clear(); self.response.clear()

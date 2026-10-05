@@ -201,3 +201,20 @@ class SettingsCloseTests(UiTests):
             plugin.close_settings(widget)
             self.wait(plugin)
             disconnect.assert_called_once()
+
+class GameSelectionTests(unittest.TestCase):
+    def test_selecting_search_result_sets_id_and_discards_old_pack(self):
+        from downloader.download_dialog import DownloadDialog
+        from PyQt6.QtWidgets import QListWidgetItem
+        from PyQt6.QtCore import Qt
+        from unittest.mock import Mock
+        app=QApplication.instance() or QApplication([])
+        dialog=DownloadDialog(Mock())
+        dialog.rows=['old manifest'];dialog.depot.addItem('old')
+        item=QListWidgetItem('Baba Is You')
+        item.setData(Qt.ItemDataRole.UserRole,{'id':736260,'name':'Baba Is You'})
+        dialog.select_game(item)
+        self.assertEqual(dialog.appid.text(),'736260')
+        self.assertEqual(dialog.rows,[])
+        self.assertEqual(dialog.depot.count(),0)
+        dialog.close()
