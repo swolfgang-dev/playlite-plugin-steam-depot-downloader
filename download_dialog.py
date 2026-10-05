@@ -105,6 +105,7 @@ class DownloadDialog(QDialog):
 
     def download(self):
         if self.busy: return
+        stage = None
         try:
             app = int(self.appid.text())
             if not self.rows or app != self.pack_app: raise ValueError('Fetch the manifest pack for this App ID first.')
@@ -127,6 +128,9 @@ class DownloadDialog(QDialog):
             args[index + 1:index + 1] = ['-c', "import os,sys; os.umask(0); os.execv('/tool/DepotDownloaderMod', ['/tool/DepotDownloaderMod', *sys.argv[1:]])"]
         except Exception as error:
             if self.temporary: self.temporary.cleanup(); self.temporary = None
+            if stage is not None:
+                try: stage.rmdir()  # Only remove an empty staging folder created by this attempt.
+                except OSError: pass
             self.status.setText(str(error)); return
         self.busy = True; self.fetch.setEnabled(False); self.start_button.setEnabled(False)
         self.cancel.setText('Cancel download')
