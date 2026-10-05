@@ -54,7 +54,7 @@ It now includes Python for isolated provider HTTP requests, as well as .NET for
 depot downloads.
 
 1. Enter the Steam App ID and select a provider. Luie uses Moon's six-character
-   login-code flow (`lua.tools` → redeem code → verify magic-link token). Hubcap
+   login-code flow (run `/login` in the LuaTools Discord → redeem the six-character code → verify magic-link token). Hubcap
    uses its own API key. Sushi and Ryuu are also supported; Ryuu's endpoint is
    HTTP, as in Moon, and does not provide transport authenticity.
 2. Fetch the pack and select a depot/manifest. Lua is parsed as data and never

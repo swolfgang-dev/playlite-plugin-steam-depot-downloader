@@ -32,7 +32,7 @@ class DownloadDialog(QDialog):
         self.provider = QComboBox(); self.provider.addItems(SOURCES)
         form.addRow('Manifest provider', self.provider)
         self.code = QLineEdit(); self.code.setEchoMode(QLineEdit.EchoMode.Password)
-        self.code.setPlaceholderText('Get a login code from lua.tools')
+        self.code.setPlaceholderText('Run /login in the LuaTools Discord; paste the six-character code')
         login = QPushButton('Sign into Moon'); login.clicked.connect(self.login)
         line = QHBoxLayout(); line.addWidget(self.code); line.addWidget(login)
         form.addRow('Moon login code', line)
