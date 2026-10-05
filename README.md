@@ -1,6 +1,6 @@
-# Steam Depot Downloader — network setup preview
+# Steam Depot Downloader — experimental isolated downloads
 
-The first milestone adds a dedicated NordVPN OpenVPN connection for future native Linux depot downloads. **Game downloads are not implemented or enabled.** It does not access host Steam, Steam account files, Moon, or installed games.
+Provides dedicated NordVPN/OpenVPN networking and an experimental Moon-compatible manifest provider plus independently authenticated Steam depot worker. It does not access host Steam, host Steam account files, or installed games. The workflow currently downloads a single selected depot into staging.
 
 ## Setup
 
@@ -27,7 +27,7 @@ An explicit **Connect** can replace a leftover connection belonging to this plug
 
 Twenty-one unit/UI tests cover credentials, container ownership, permissions, normalized firewall rules, authentication errors, cancellation, stale health, worker ordering, shutdown and cleanup safety. The offline Docker tests cover TCP and DNS/UDP blocking, tunnel loss, forced fallback routes, tunnel recovery, namespace replacement, IPv6, and actual parent-process crash cleanup. GitHub CI runs those credential-free Docker tests before building releases.
 
-Live validation on 5-Oct-2026 passed all nineteen checks using a separate NordVPN connection: diagnostic HTTPS and DNS, blocked LAN access, stopped-tunnel and forced-fallback blocking, OpenVPN stop/start recovery, forced process-crash recovery, gateway replacement, stale-worker blocking, and a fresh worker on the recovered gateway. OpenVPN was killed with SIGKILL; Gluetun automatically started a replacement process and restored HTTPS and DNS without a manual reconnect. The user's original connection stayed healthy. Earlier attempts encountered intermittent NordVPN authentication rejection; the successful run verifies automatic recovery but does not establish the cause of those earlier rejections. Game downloads remain disabled.
+Live validation on 5-Oct-2026 passed all nineteen checks using a separate NordVPN connection: diagnostic HTTPS and DNS, blocked LAN access, stopped-tunnel and forced-fallback blocking, OpenVPN stop/start recovery, forced process-crash recovery, gateway replacement, stale-worker blocking, and a fresh worker on the recovered gateway. OpenVPN was killed with SIGKILL; Gluetun automatically started a replacement process and restored HTTPS and DNS without a manual reconnect. The user's original connection stayed healthy. Earlier attempts encountered intermittent NordVPN authentication rejection; the successful run verifies automatic recovery but does not establish the cause of those earlier rejections. A single-depot download test workflow is now available; end-to-end authenticated content verification remains pending.
 
 Run the offline checks with `python tools/check_isolation.py` and `python tools/check_cleanup.py`. To explicitly authorize a separate live test connection using the current gateway's read-only secret mount, run `python tools/check_vpn_failures.py --live`; optionally select `--country "United States"`. Add `--crash` to include the verified forced OpenVPN process-crash test. The live test never prints credential contents and cleans up its own containers.
 
@@ -41,7 +41,39 @@ The Baba Is You test (App ID 736260) successfully connected anonymously to Steam
 
 Baba's Moon pack was not cached in the VM. Its public configured sources did not provide a pack, and the saved Moon access token was expired. Session renewal returned HTTP 401. A fresh Moon login/manifest pack, or a separately authenticated Steam session, is required before the actual small-file download test can proceed. No game content has been downloaded yet. Twenty-five unit/UI tests pass, including worker isolation and false-success handling.
 
-Next milestone: import the authorized manifest pack, download and verify a small file, then build the user-facing download workflow. No integration with host Steam is planned.
+Next milestone: verify the new provider/login workflow with an actual small file, then add complete multi-depot installation orchestration. No integration with host Steam is planned.
 
 Gluetun documentation: https://github.com/qdm12/gluetun-wiki
 NordVPN service credentials: https://support.nordvpn.com/hc/en-us/articles/19685514639633
+
+### Moon providers and independent Steam login (experimental)
+
+Open **Steam Depot Downloader → Open depot downloader…** after connecting the
+VPN. The native worker image must be built using `tools/build_worker.py` first.
+It now includes Python for isolated provider HTTP requests, as well as .NET for
+depot downloads.
+
+1. Enter the Steam App ID and select a provider. Luie uses Moon's six-character
+   login-code flow (`lua.tools` → redeem code → verify magic-link token). Hubcap
+   uses its own API key. Sushi and Ryuu are also supported; Ryuu's endpoint is
+   HTTP, as in Moon, and does not provide transport authenticity.
+2. Fetch the pack and select a depot/manifest. Lua is parsed as data and never
+   executed. ZIP traversal, symlinks, conflicting pins/keys, wrong App IDs and
+   oversized packs are rejected. Manifest bytes and keys never enter host Steam.
+3. Enter the account name of the Steam account that owns the game, select an
+   existing empty destination, and download. Enter the password and Steam Guard
+   responses only when the worker prompts for them. These responses travel on
+   stdin, not command-line arguments. Each worker uses its own random Steam
+   LogonID, ephemeral HOME/authentication cache and the VPN's guarded namespace.
+
+Moon sessions refresh automatically while this window stays open; they are not
+persisted and are discarded when it closes. Steam credentials are not retained.
+Provider requests fail closed if the VPN checks fail; authenticated HTTP redirects
+are rejected so provider credentials cannot be forwarded to another service.
+
+This is currently a **single-depot test workflow**, not a complete installation
+method. Files remain in the chosen folder's `.playlite-download` staging folder;
+no automatic installation/library entry or multi-depot orchestration is enabled.
+Cancellation removes the named worker and retains incomplete output. A real
+Steam-authenticated game-file download still requires interactive login and has
+not yet been verified end to end.

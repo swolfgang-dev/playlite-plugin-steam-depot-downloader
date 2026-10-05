@@ -44,7 +44,7 @@ class Plugin(GenericPlugin):
     def create_settings(self, parent=None):
         widget = QWidget(parent)
         form = QFormLayout(widget)
-        note = QLabel('Network setup preview. Game downloads are disabled. Uses a dedicated Docker/OpenVPN container; host Steam is not accessed.')
+        note = QLabel('Uses a dedicated Docker/OpenVPN container; host Steam is not accessed. The depot downloader is an experimental, explicit test workflow.')
         note.setWordWrap(True)
         form.addRow(note)
         widget.country = QLineEdit(self.settings().value('country', ''))
@@ -92,6 +92,13 @@ class Plugin(GenericPlugin):
             widget.buttons.append(button)
         form.addRow(controls)
         form.addRow(widget.status)
+        download = QPushButton("Open depot downloader…")
+        def open_downloader():
+            from .download_dialog import DownloadDialog
+            dialog = DownloadDialog(self.network, widget)
+            dialog.exec()
+        download.clicked.connect(open_downloader)
+        form.addRow(download)
         return widget
 
     def stop(self, widget):
