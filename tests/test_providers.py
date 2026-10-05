@@ -162,7 +162,7 @@ class SeparatedWorkflowTests(unittest.TestCase):
         settings=DownloadDialog(Mock(),authentication=True);settings.show();app.processEvents()
         self.assertTrue(settings.code.isVisible());self.assertTrue(settings.username.isVisible())
         self.assertTrue(settings.response.isVisible());self.assertFalse(settings.appid.isVisible())
-        self.assertEqual(settings.start_button.text(),'Sign into Steam')
+        self.assertEqual(settings.start_button.text(),'Authenticate')
         downloader.close();settings.close()
 
     def test_plugin_exposes_main_menu_action(self):

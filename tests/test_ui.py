@@ -159,12 +159,18 @@ class AutoConnectTests(unittest.TestCase):
             start.assert_not_called()
             widget.hide()
 
-    def test_forget_removes_saved_credentials_without_disconnect(self):
-        plugin = Plugin()
-        with patch('downloader.credentials.MoonSessionWallet.read', return_value=None):
-            widget = plugin.create_settings()
-        with patch('downloader.plugin.Wallet') as wallet, patch.object(plugin.network, 'disconnect') as disconnect:
-            widget.forget_credentials.click()
+    def test_forget_is_in_nordvpn_popup_and_preserves_connection(self):
+        from downloader.authentication_dialog import CredentialDialog
+        from unittest.mock import Mock
+        network = Mock()
+        dialog = CredentialDialog('NordVPN', network)
+        with patch('downloader.authentication_dialog.Wallet') as wallet:
+            def run(operation):
+                dialog.status.setText(operation())
+            dialog.run = run
+            dialog.logout.click()
             wallet.return_value.clear.assert_called_once()
-            disconnect.assert_not_called()
-            self.assertIn('credentials removed', widget.status.text())
+            network.disconnect.assert_not_called()
+            self.assertEqual(dialog.submit.text(), 'Authenticate')
+            self.assertIn('credentials removed', dialog.status.text())
+        dialog.close()

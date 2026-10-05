@@ -37,7 +37,7 @@ class DownloadDialog(QDialog):
         form.addRow('Manifest provider', self.provider); download_rows.append(self.provider)
         self.code = QLineEdit(); self.code.setEchoMode(QLineEdit.EchoMode.Password)
         self.code.setPlaceholderText('Run /login in the LuaTools Discord; paste the six-character code')
-        login = QPushButton('Sign into Moon'); login.clicked.connect(self.login)
+        login = QPushButton('Authenticate'); login.clicked.connect(self.login)
         line = QHBoxLayout(); line.addWidget(self.code); line.addWidget(login)
         logout = QPushButton('Sign out'); logout.clicked.connect(lambda: self.task(self.moon.logout, self.status.setText))
         line.addWidget(logout)
@@ -79,7 +79,7 @@ class DownloadDialog(QDialog):
             form.setRowVisible(row, False)
         if authentication:
             self.setWindowTitle('Steam Depot Downloader authentication — Playlite')
-            self.start_button.setText('Sign into Steam')
+            self.start_button.setText('Authenticate')
             notice.setText('Manage Moon, Hubcap and Steam authentication here. Login sessions are saved in KWallet. Connect the VPN in plugin settings first.')
             if authentication == 'steam':
                 for index in range(form.rowCount()):
@@ -123,7 +123,7 @@ class DownloadDialog(QDialog):
                     details.setText('Hide details' if visible else 'Show details')
                     self.adjustSize()
                 details.toggled.connect(toggle_details)
-                self.start_button.setParent(self); self.start_button.setText('Sign in')
+                self.start_button.setParent(self); self.start_button.setText('Authenticate')
                 self.cancel.setParent(self)
                 footer = QHBoxLayout(); footer.addWidget(details); footer.addStretch()
                 footer.addWidget(self.start_button); footer.addWidget(self.cancel)

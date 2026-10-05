@@ -105,7 +105,7 @@ class Plugin(GenericPlugin):
                 widget.status.setText(str(error))
                 return
             self.start(widget, lambda progress: self.network.connect(preferences, *credentials, progress=progress), cancellable=True)
-        for text, callback in [('NordVPN login…', save_credentials), ('Connect', connect),
+        for text, callback in [('Authenticate', save_credentials), ('Connect', connect),
                                ('Check connection', lambda: self.start(widget, lambda progress: self.network.check())),
                                ('Disconnect', lambda: self.stop(widget))]:
             button = QPushButton(text)
@@ -114,17 +114,6 @@ class Plugin(GenericPlugin):
                 account_controls = QHBoxLayout()
                 account_controls.setSpacing(10)
                 account_controls.addWidget(button)
-                forget = QPushButton('Forget credentials')
-                def forget_credentials():
-                    if self.busy: return
-                    try:
-                        Wallet().clear()
-                        widget.status.setText('Saved VPN credentials removed.' + (' The current connection remains active.' if self.network.container else ''))
-                    except Exception as error:
-                        widget.status.setText(str(error))
-                forget.clicked.connect(forget_credentials)
-                widget.forget_credentials = forget
-                account_controls.addWidget(forget)
                 account_controls.addStretch()
                 form.insertRow(1, 'Service account', account_controls)
             else:
@@ -142,7 +131,7 @@ class Plugin(GenericPlugin):
             status = QLabel('Status not checked')
             status.setWordWrap(True)
             widget.auth_status[name] = status
-            button = QPushButton('Manage login…' if name != 'Hubcap' else 'Manage API key…')
+            button = QPushButton('Authenticate')
             button.setFixedWidth(max(180, button.sizeHint().width()))
             def open_login():
                 if name == 'Steam':
@@ -227,7 +216,6 @@ class Plugin(GenericPlugin):
         if self.busy:
             return
         self.busy = True
-        widget.forget_credentials.setEnabled(False)
         if cancellable:
             self.network.cancelled.clear()
         for button in widget.buttons:
@@ -250,7 +238,6 @@ class Plugin(GenericPlugin):
             self.jobs.discard(job)
             try:
                 widget.status.setText(text)
-                widget.forget_credentials.setEnabled(True)
                 widget.buttons[-1].setText('Disconnect')
                 for button in widget.buttons:
                     button.setEnabled(True)

@@ -31,12 +31,11 @@ class CredentialDialog(QDialog):
             info = QLabel('Your API key is saved in KWallet. Its acceptance is confirmed when you fetch a manifest pack.')
         info.setOpenExternalLinks(True); info.setWordWrap(True); form.addRow(info)
         self.status = QLabel(''); self.status.setWordWrap(True); form.addRow(self.status)
-        self.submit = QPushButton('Sign in' if provider == 'Moon' else 'Save credentials')
+        self.submit = QPushButton('Authenticate')
         self.submit.clicked.connect(self.save); self.secret.returnPressed.connect(self.save)
         form.addRow(self.submit)
-        if provider != 'NordVPN':
-            self.logout = QPushButton('Sign out' if provider == 'Moon' else 'Remove saved API key')
-            self.logout.clicked.connect(self.remove); form.addRow(self.logout)
+        self.logout = QPushButton('Forget credentials' if provider == 'NordVPN' else 'Sign out' if provider == 'Moon' else 'Remove saved API key')
+        self.logout.clicked.connect(self.remove); form.addRow(self.logout)
         self.close_button = QPushButton('Close'); self.close_button.clicked.connect(self.close); form.addRow(self.close_button)
 
     def run(self, operation):
@@ -72,6 +71,9 @@ class CredentialDialog(QDialog):
 
     def remove(self):
         def operation():
+            if self.provider == 'NordVPN':
+                Wallet().clear()
+                return 'Saved VPN credentials removed. The current connection is unchanged.'
             (MoonSessionWallet() if self.provider == 'Moon' else HubcapKeyWallet()).clear()
             setattr(self.network, self.provider.lower() + '_confirmed', False)
             return 'Saved authentication removed.'
