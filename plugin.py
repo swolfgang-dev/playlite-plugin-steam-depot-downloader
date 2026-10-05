@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt, QCoreApplication, QObject, QRunnable, QThreadPool, QSettings, pyqtSignal
+from PyQt6.QtCore import QTimer, Qt, QCoreApplication, QObject, QRunnable, QThreadPool, QSettings, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout, QGroupBox, QVBoxLayout, QSizePolicy
 from playlite.providers import GenericPlugin
 from .credentials import Wallet
@@ -20,6 +20,12 @@ class Job(QRunnable):
         except Exception as error:
             text = str(error)
         self.signals.finished.emit(text)
+
+class SettingsWidget(QWidget):
+    """Start the connection only when the settings page becomes visible."""
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self.on_open)
 
 class Plugin(GenericPlugin):
     def __init__(self):
@@ -53,7 +59,7 @@ class Plugin(GenericPlugin):
         return QSettings('Playlite', 'SteamDownloader')
 
     def create_settings(self, parent=None):
-        widget = QWidget(parent)
+        widget = SettingsWidget(parent)
         page = QVBoxLayout(widget)
         page.setContentsMargins(0, 8, 0, 0)
         page.setSpacing(16)
@@ -107,6 +113,17 @@ class Plugin(GenericPlugin):
                 account_controls = QHBoxLayout()
                 account_controls.setSpacing(10)
                 account_controls.addWidget(button)
+                forget = QPushButton('Forget credentials')
+                def forget_credentials():
+                    if self.busy: return
+                    try:
+                        Wallet().clear()
+                        widget.status.setText('Saved VPN credentials removed.' + (' The current connection remains active.' if self.network.container else ''))
+                    except Exception as error:
+                        widget.status.setText(str(error))
+                forget.clicked.connect(forget_credentials)
+                widget.forget_credentials = forget
+                account_controls.addWidget(forget)
                 account_controls.addStretch()
                 form.insertRow(1, 'Service account', account_controls)
             else:
@@ -180,6 +197,21 @@ class Plugin(GenericPlugin):
         footer.addWidget(check)
         page.addLayout(footer)
         refresh_status()
+        def on_open():
+            if self.busy or not widget.isVisible(): return
+            if self.network.container:
+                self.start(widget, lambda progress: self.network.check())
+                return
+            try:
+                credentials = Wallet().read()
+                preferences = Preferences(widget.country.text().strip(), widget.protocol.currentText()).validate()
+            except ValueError:
+                return  # No saved service credentials; wait for an explicit login.
+            except Exception as error:
+                widget.status.setText(str(error))
+                return
+            self.start(widget, lambda progress: self.network.connect(preferences, *credentials, progress=progress), cancellable=True)
+        widget.on_open = on_open
         return widget
 
     def stop(self, widget):
@@ -194,6 +226,7 @@ class Plugin(GenericPlugin):
         if self.busy:
             return
         self.busy = True
+        widget.forget_credentials.setEnabled(False)
         if cancellable:
             self.network.cancelled.clear()
         for button in widget.buttons:
@@ -216,6 +249,7 @@ class Plugin(GenericPlugin):
             self.jobs.discard(job)
             try:
                 widget.status.setText(text)
+                widget.forget_credentials.setEnabled(True)
                 widget.buttons[-1].setText('Disconnect')
                 for button in widget.buttons:
                     button.setEnabled(True)

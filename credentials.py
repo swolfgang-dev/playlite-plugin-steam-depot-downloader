@@ -67,6 +67,17 @@ class Wallet:
         finally:
             self.call('close', handle, False, APP)
 
+    def clear(self):
+        """Remove only this plugin's saved NordVPN service credentials."""
+        handle = self.opened()
+        try:
+            if self.call('hasEntry', handle, FOLDER, ENTRY, APP):
+                if self.call('removeEntry', handle, FOLDER, ENTRY, APP) != 0:
+                    raise RuntimeError('Could not remove VPN credentials from KWallet.')
+        finally:
+            self.call('close', handle, False, APP)
+
+
 class MoonSessionWallet:
     """Keep Moon tokens in a separate encrypted entry from NordVPN credentials."""
     entry = 'Moon session'

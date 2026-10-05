@@ -129,3 +129,42 @@ class AuthenticationLayoutTests(unittest.TestCase):
         self.assertIn('authenticator', dialog.status.text())
         dialog.process = None
         dialog.close()
+
+class AutoConnectTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_saved_credentials_connect_only_when_page_opens(self):
+        plugin = Plugin()
+        with patch('downloader.credentials.MoonSessionWallet.read', return_value=None):
+            widget = plugin.create_settings()
+        with patch.object(plugin.network, 'container', None), patch('downloader.plugin.Wallet') as wallet, patch.object(plugin, 'start') as start, patch.object(plugin.network, 'connect') as connect:
+            wallet.return_value.read.return_value = ('service-user', 'service-password')
+            start.assert_not_called()
+            widget.show(); self.app.processEvents()
+            start.assert_called_once()
+            self.assertTrue(start.call_args.kwargs['cancellable'])
+            start.call_args.args[1](lambda message: None)
+            self.assertEqual(connect.call_args.args[1:], ('service-user', 'service-password'))
+            widget.hide()
+
+    def test_no_credentials_does_not_connect(self):
+        plugin = Plugin()
+        with patch('downloader.credentials.MoonSessionWallet.read', return_value=None):
+            widget = plugin.create_settings()
+        with patch.object(plugin.network, 'container', None), patch('downloader.plugin.Wallet') as wallet, patch.object(plugin, 'start') as start:
+            wallet.return_value.read.side_effect = ValueError('Save credentials first')
+            widget.show(); self.app.processEvents()
+            start.assert_not_called()
+            widget.hide()
+
+    def test_forget_removes_saved_credentials_without_disconnect(self):
+        plugin = Plugin()
+        with patch('downloader.credentials.MoonSessionWallet.read', return_value=None):
+            widget = plugin.create_settings()
+        with patch('downloader.plugin.Wallet') as wallet, patch.object(plugin.network, 'disconnect') as disconnect:
+            widget.forget_credentials.click()
+            wallet.return_value.clear.assert_called_once()
+            disconnect.assert_not_called()
+            self.assertIn('credentials removed', widget.status.text())
