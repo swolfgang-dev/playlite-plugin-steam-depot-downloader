@@ -48,6 +48,10 @@ def main():
     text = text.replace('IsolatedStorage.FileExists(filename)', 'File.Exists(filename)')
     text = text.replace('IsolatedStorage.OpenFile(', 'File.Open(')
     accounts.write_text(text)
+    downloader = source / 'DepotDownloader' / 'ContentDownloader.cs'
+    text = downloader.read_text()
+    text = text.replace('DepotManifest.LoadFromFile(Config.ManifestFile)', 'DepotManifest.Deserialize(File.ReadAllBytes(Config.ManifestFile))')
+    downloader.write_text(text)
     context = work / 'image'
     context.mkdir(exist_ok=True)
     shutil.copyfile(Path(__file__).parent / 'worker' / 'Dockerfile', context / 'Dockerfile')
