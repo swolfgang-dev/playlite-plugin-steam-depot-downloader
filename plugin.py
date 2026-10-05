@@ -61,12 +61,14 @@ class Plugin(GenericPlugin):
         note.setWordWrap(True)
         page.addWidget(note)
         def section(title):
-            box = QGroupBox(title)
+            box = QGroupBox()
             layout = QFormLayout(box)
-            layout.setContentsMargins(16, 20, 16, 16)
+            layout.setContentsMargins(16, 16, 16, 16)
             layout.setHorizontalSpacing(16)
             layout.setVerticalSpacing(12)
             layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+            heading = QLabel(f'<b>{title}</b>')
+            layout.addRow(heading)
             page.addWidget(box)
             return layout
         form = section('NordVPN')
@@ -80,6 +82,7 @@ class Plugin(GenericPlugin):
         widget.status = QLabel('Connection not checked')
         widget.status.setWordWrap(True)
         controls = QHBoxLayout()
+        controls.setSpacing(10)
         widget.buttons = []
         def save_credentials():
             from .authentication_dialog import CredentialDialog
@@ -97,12 +100,19 @@ class Plugin(GenericPlugin):
                                ('Disconnect', lambda: self.stop(widget))]:
             button = QPushButton(text)
             button.clicked.connect(callback)
-            controls.addWidget(button)
+            if not widget.buttons:
+                account_controls = QHBoxLayout()
+                account_controls.setSpacing(10)
+                account_controls.addWidget(button)
+                account_controls.addStretch()
+                form.insertRow(1, 'Service account', account_controls)
+            else:
+                controls.addWidget(button)
             button.setMinimumWidth(button.sizeHint().width())
             widget.buttons.append(button)
         controls.addStretch()
-        form.addRow(controls)
-        form.addRow(widget.status)
+        form.addRow('Connection', controls)
+        form.addRow('Status', widget.status)
         widget.auth_status = {}
         form = section('Steam')
         def account_row(name):
