@@ -1,14 +1,9 @@
-import importlib.util,sys,subprocess,uuid,threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import importlib.util,sys,subprocess,uuid
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('downloader',root/'__init__.py',submodule_search_locations=[str(root)])
 m=importlib.util.module_from_spec(spec);sys.modules['downloader']=m;spec.loader.exec_module(m)
 from downloader.network import IMAGE,GUARD
-class Handler(BaseHTTPRequestHandler):
- def do_GET(self): self.send_response(200);self.end_headers();self.wfile.write(b'reachable')
- def log_message(self,*args): pass
-server=HTTPServer(('0.0.0.0',0),Handler);threading.Thread(target=server.serve_forever,daemon=True).start()
 name='playlite-isolation-test-'+uuid.uuid4().hex[:8]
 def docker(*args):
  r=subprocess.run(['docker',*args],text=True,capture_output=True,timeout=25)
@@ -25,4 +20,4 @@ try:
  else: raise RuntimeError('Isolation test FAILED')
  print('IPv6 disabled:',docker('exec',cid,'cat','/proc/sys/net/ipv6/conf/all/disable_ipv6'))
 finally:
- subprocess.run(['docker','rm','-f',name],capture_output=True);server.shutdown()
+ subprocess.run(['docker','rm','-f',name],capture_output=True)
