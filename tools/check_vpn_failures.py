@@ -53,7 +53,7 @@ def wait_ready(network, timeout=90):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--live', action='store_true', help='Authorize connecting a separate test VPN using the current gateway secret mount')
-    parser.add_argument('--crash', action='store_true', help='Also force an OpenVPN crash (automatic recovery validation is still experimental)')
+    parser.add_argument('--crash', action='store_true', help='Also force an OpenVPN crash and verify automatic recovery')
     parser.add_argument('--country', default='', help='Optional single country for the test gateway')
     options = parser.parse_args()
     if not options.live:
