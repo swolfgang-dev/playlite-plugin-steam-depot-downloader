@@ -134,7 +134,7 @@ def parse_pack(data, app):
                         text = lua.decode(encoding)
                     except UnicodeError as error:
                         raise ValueError('A Lua file in the manifest pack has an unsupported text encoding.') from error
-                    app_ids.update(map(int, re.findall(r'addappid\s*\(\s*(\d+)\s*\)', text)))
+                    app_ids.update(map(int, re.findall(r'addappid\s*\(\s*(\d+)\s*(?:\)|,)', text)))
                     for depot, key in re.findall(r'addappid\s*\(\s*(\d+)\s*,\s*\d+\s*,\s*[\'"]([0-9a-fA-F]{64})[\'"]\s*\)', text):
                         depot = int(depot)
                         if depot in keys and keys[depot] != key.lower(): raise ValueError('Conflicting depot keys.')
@@ -168,7 +168,9 @@ def prepare_depot(row, directory):
     directory = Path(directory)
     directory.mkdir(mode=0o700)
     (directory / 'manifest.bin').write_bytes(row.data)
+    (directory / 'manifest.bin').chmod(0o644)
     if row.key:
         (directory / 'depot.keys').write_text(f'{row.id};{row.key}\n')
+        (directory / 'depot.keys').chmod(0o644)
     # Parent directory remains private; the bind mount is readable by worker UID.
     directory.chmod(0o755)

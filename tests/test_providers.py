@@ -15,6 +15,27 @@ def pack(entries):
     return stream.getvalue()
 
 class ProviderTests(unittest.TestCase):
+    def test_prepared_inputs_are_readable_under_private_parent_with_restrictive_umask(self):
+        import tempfile,os,stat
+        from pathlib import Path
+        from downloader.providers import prepare_depot,Depot
+        with tempfile.TemporaryDirectory() as parent:
+            previous=os.umask(0o077)
+            try:
+                directory=Path(parent)/'pack'
+                prepare_depot(Depot(123,456,b'blob','ab'*32),directory)
+            finally:
+                os.umask(previous)
+            self.assertEqual(stat.S_IMODE(Path(parent).stat().st_mode),0o700)
+            for name in ('manifest.bin','depot.keys'):
+                self.assertEqual(stat.S_IMODE((directory/name).stat().st_mode),0o644)
+
+    def test_app_declaration_with_provider_arguments_is_accepted(self):
+        data = pack({'736260.lua': 'addappid(736260, 1, "")\naddappid(736263,1,"' + 'ab'*32 + '")\nsetManifestid(736263,"7874711158613025532",112508590)', '736263_7874711158613025532.manifest': b'blob'})
+        rows = parse_pack(data,736260)
+        self.assertEqual(rows[0].id,736263)
+        self.assertEqual(rows[0].key,'ab'*32)
+
     def test_parse_pinned_manifest_without_executing_lua(self):
         data = pack({'736260.lua':'addappid(736260)\naddappid(123,1,"'+'ab'*32+'")\nsetManifestid(123,"456")\nos.execute("do not run")', '123_456.manifest':b'blob', '123_789.manifest':b'other'})
         rows = parse_pack(data,736260)
