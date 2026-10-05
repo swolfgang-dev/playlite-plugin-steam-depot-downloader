@@ -174,3 +174,30 @@ class AutoConnectTests(unittest.TestCase):
             self.assertEqual(dialog.submit.text(), 'Authenticate')
             self.assertIn('credentials removed', dialog.status.text())
         dialog.close()
+
+class SettingsCloseTests(UiTests):
+    def test_close_disconnects_and_preserves_credentials(self):
+        from PyQt6.QtWidgets import QDialog
+        plugin = Plugin()
+        owner = QDialog()
+        with patch('downloader.credentials.MoonSessionWallet.read', return_value=None):
+            widget = plugin.create_settings(owner)
+        with patch.object(plugin.network, 'disconnect', return_value='Disconnected') as disconnect, patch('downloader.plugin.Wallet') as wallet:
+            owner.reject()
+            self.wait(plugin)
+            disconnect.assert_called_once()
+            wallet.assert_not_called()
+            self.assertTrue(widget.settings_closed)
+
+    def test_close_cancels_then_cleans_up_after_inflight_operation(self):
+        plugin = Plugin()
+        with patch('downloader.credentials.MoonSessionWallet.read', return_value=None):
+            widget = plugin.create_settings()
+        def operation(progress):
+            plugin.network.cancelled.wait(2)
+            plugin.network.check_cancelled()
+        with patch.object(plugin.network, 'disconnect', return_value='Disconnected') as disconnect:
+            plugin.start(widget, operation, cancellable=True)
+            plugin.close_settings(widget)
+            self.wait(plugin)
+            disconnect.assert_called_once()

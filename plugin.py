@@ -1,5 +1,5 @@
 from PyQt6.QtCore import QTimer, Qt, QCoreApplication, QObject, QRunnable, QThreadPool, QSettings, pyqtSignal
-from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout, QGroupBox, QVBoxLayout, QSizePolicy
+from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout, QGroupBox, QVBoxLayout, QSizePolicy, QDialog
 from playlite.providers import GenericPlugin
 from .credentials import Wallet
 from .network import Network
@@ -60,6 +60,10 @@ class Plugin(GenericPlugin):
 
     def create_settings(self, parent=None):
         widget = SettingsWidget(parent)
+        widget.settings_closed = False
+        owner = widget.window()
+        if isinstance(owner, QDialog):
+            owner.finished.connect(lambda *_: self.close_settings(widget))
         page = QVBoxLayout(widget)
         page.setContentsMargins(0, 8, 0, 0)
         page.setSpacing(16)
@@ -188,6 +192,7 @@ class Plugin(GenericPlugin):
         page.addLayout(footer)
         refresh_status()
         def on_open():
+            widget.settings_closed = False
             if self.busy or not widget.isVisible(): return
             if self.network.container:
                 self.start(widget, lambda progress: self.network.check())
@@ -203,6 +208,23 @@ class Plugin(GenericPlugin):
             self.start(widget, lambda progress: self.network.connect(preferences, *credentials, progress=progress), cancellable=True)
         widget.on_open = on_open
         return widget
+
+    def close_settings(self, widget):
+        widget.settings_closed = True
+        self.network.cancel()
+        if not self.busy:
+            self.disconnect_after_settings()
+
+    def disconnect_after_settings(self):
+        # Wait for an in-flight operation to finish before removing its container.
+        self.busy = True
+        job = Job(self.network.disconnect)
+        self.jobs.add(job)
+        def finished(_):
+            self.busy = False
+            self.jobs.discard(job)
+        job.signals.finished.connect(finished)
+        QThreadPool.globalInstance().start(job)
 
     def stop(self, widget):
         if self.busy:
@@ -236,6 +258,9 @@ class Plugin(GenericPlugin):
         def finished(text):
             self.busy = False
             self.jobs.discard(job)
+            if widget.settings_closed:
+                self.disconnect_after_settings()
+                return
             try:
                 widget.status.setText(text)
                 widget.buttons[-1].setText('Disconnect')
