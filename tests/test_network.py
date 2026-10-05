@@ -128,6 +128,7 @@ class ConnectionTests(unittest.TestCase):
     def test_kernel_normalized_firewall_rules_are_accepted(self):
         network = Network()
         network.container = 'exact-id'
+        network.directory = '/test-session'  # DNS/probe creation is mocked below.
         outputs = [
             '-P OUTPUT DROP\n-A OUTPUT -m owner --uid-owner 65534 -j PLAYLITE_WORKER',
             '1',
