@@ -144,7 +144,7 @@ class Network:
             while time.monotonic() < limit:
                 self.check_cancelled()
                 elapsed = int(time.monotonic() - started)
-                progress(f'Connecting to NordVPN ({elapsed}s / {deadline}s)… Cancel is available.')
+                progress(f'Connecting to NordVPN ({elapsed}s / {deadline:.0f}s)… Cancel is available.')
                 data = self.inspect()
                 if not data['State']['Running']:
                     raise RuntimeError('The VPN stopped before establishing a tunnel.')
