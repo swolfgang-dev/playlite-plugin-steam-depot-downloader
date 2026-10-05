@@ -123,6 +123,20 @@ class Plugin(GenericPlugin):
                 refresh_status()
             button.clicked.connect(open_login)
             line.addWidget(status, 1); line.addWidget(button)
+            if name == 'Steam':
+                forget = QPushButton('Sign out')
+                def sign_out():
+                    from .credentials import SteamSessionWallet
+                    account = self.settings().value('steam_account', '')
+                    try:
+                        if account: SteamSessionWallet(account).clear()
+                        self.network.steam_confirmed = False
+                        refresh_status()
+                    except Exception:
+                        status.setText('Could not remove saved login. Unlock KWallet and retry.')
+                forget.clicked.connect(sign_out)
+                line.addWidget(forget)
+
             if name != 'Steam':
                 label = QLabel(name)
                 label.setFixedWidth(90)

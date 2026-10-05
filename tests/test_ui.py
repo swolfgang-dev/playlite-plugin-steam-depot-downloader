@@ -97,5 +97,35 @@ class AuthenticationLayoutTests(unittest.TestCase):
         self.assertFalse(dialog.code.isVisible())
         self.assertFalse(dialog.key.isVisible())
         self.assertTrue(dialog.username.isVisible())
+        self.assertFalse(dialog.response.isVisible())
+        self.assertTrue(dialog.password.isVisible())
+        self.assertFalse(dialog.log.isVisible())
+        dialog.close()
+
+    def test_steam_password_is_sent_only_after_prompt_then_cleared(self):
+        from downloader.download_dialog import DownloadDialog
+        from unittest.mock import Mock
+        app = QApplication.instance() or QApplication([])
+        dialog = DownloadDialog(Mock(), authentication='steam')
+        dialog.process = Mock()
+        dialog.process.readAllStandardOutput.return_value = b'Enter account password for "test":'
+        dialog.pending_password = 'test-password'
+        dialog.read_output()
+        dialog.process.write.assert_called_once_with(b'test-password\n')
+        self.assertEqual(dialog.pending_password, '')
+        dialog.process = None
+        dialog.close()
+
+    def test_steam_guard_appears_only_after_challenge(self):
+        from downloader.download_dialog import DownloadDialog
+        from unittest.mock import Mock
+        app = QApplication.instance() or QApplication([])
+        dialog = DownloadDialog(Mock(), authentication='steam')
+        dialog.show(); app.processEvents()
+        dialog.process = Mock()
+        dialog.process.readAllStandardOutput.return_value = b'Please enter your 2 factor auth code'
+        dialog.read_output(); app.processEvents()
         self.assertTrue(dialog.response.isVisible())
+        self.assertIn('authenticator', dialog.status.text())
+        dialog.process = None
         dialog.close()

@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from PyQt6.QtCore import QProcess, QThreadPool, QSettings
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,
-                            QLabel, QPlainTextEdit, QFileDialog, QHBoxLayout)
+                            QLabel, QPlainTextEdit, QFileDialog, QHBoxLayout, QWidget, QVBoxLayout)
 from .moon import Moon
 from .credentials import MoonSessionWallet, SteamSessionWallet, HubcapKeyWallet
 from .providers import SOURCES, Transport, prepare_depot
@@ -82,15 +82,70 @@ class DownloadDialog(QDialog):
             self.start_button.setText('Sign into Steam')
             notice.setText('Manage Moon, Hubcap and Steam authentication here. Login sessions are saved in KWallet. Connect the VPN in plugin settings first.')
             if authentication == 'steam':
-                for row in auth_rows[:3]:
-                    form.setRowVisible(row, False)
+                for index in range(form.rowCount()):
+                    form.setRowVisible(index, False)
                 self.setWindowTitle('Steam login — Playlite')
-                notice.setText('Sign into your separate Steam download session. Your saved login stays in KWallet. Connect NordVPN first.')
-                self.resize(680, 440)
-                self.log.setMaximumHeight(160)
-                self.response.setPlaceholderText('Password or Steam Guard code')
+                self.resize(560, 300)
+                self.pending_password = ''
+                self.login_succeeded = False
+                self.steam_form = QFormLayout()
+                self.steam_form.setVerticalSpacing(12)
+                notice = QLabel('Sign in to your Steam download account.')
+                self.steam_form.addRow(notice)
+                self.username.setParent(self)
+                self.steam_form.addRow('Account name', self.username)
+                self.password = QLineEdit()
+                self.password.setEchoMode(QLineEdit.EchoMode.Password)
+                self.password.returnPressed.connect(self.download)
+                self.steam_form.addRow('Password', self.password)
+                self.response.setParent(self)
+                self.send.setParent(self)
+                self.send.setText('Continue')
+                self.guard_row = QHBoxLayout()
+                self.guard_row.addWidget(self.response); self.guard_row.addWidget(self.send)
+                self.response.setPlaceholderText('Steam Guard code')
+                self.steam_form.addRow('Steam Guard', self.guard_row)
+                self.steam_form.setRowVisible(self.guard_row, False)
+                self.status.setParent(self)
+                self.status.setText('Your login will be saved securely in KWallet.')
+                self.steam_form.addRow(self.status)
+                self.vpn_button = QPushButton('Connect VPN')
+                self.vpn_button.clicked.connect(self.connect_vpn)
+                self.steam_form.addRow(self.vpn_button)
+                self.steam_form.setRowVisible(self.vpn_button, False)
+                details = QPushButton('Show details')
+                details.setCheckable(True)
+                self.log.setParent(self); self.log.setMaximumHeight(150)
+                self.steam_form.addRow(self.log)
+                self.steam_form.setRowVisible(self.log, False)
+                def toggle_details(visible):
+                    self.steam_form.setRowVisible(self.log, visible)
+                    details.setText('Hide details' if visible else 'Show details')
+                    self.adjustSize()
+                details.toggled.connect(toggle_details)
+                self.start_button.setParent(self); self.start_button.setText('Sign in')
+                self.cancel.setParent(self)
+                footer = QHBoxLayout(); footer.addWidget(details); footer.addStretch()
+                footer.addWidget(self.start_button); footer.addWidget(self.cancel)
+                self.steam_form.addRow(footer)
+                form.addRow(self.steam_form)
+                for control in (self.username, self.status, self.start_button, self.cancel):
+                    control.show()
         else:
             notice.setText('Select a game, provider, depot and download folder. VPN connection and saved authentication are configured in plugin settings.')
+
+    def connect_vpn(self):
+        from .credentials import Wallet
+        from .settings import Preferences
+        def operation():
+            settings = QSettings('Playlite', 'SteamDownloader')
+            preferences = Preferences(settings.value('country', ''), settings.value('protocol', 'udp')).validate()
+            self.network.cancelled.clear()
+            return self.network.connect(preferences, *Wallet().read())
+        def done(message):
+            self.status.setText(message)
+            self.steam_form.setRowVisible(self.vpn_button, False)
+        self.task(operation, done)
 
     def save_key(self):
         key = self.key.text().strip()
@@ -145,6 +200,16 @@ class DownloadDialog(QDialog):
     def download(self):
         if self.busy: return
         stage = None
+        if self.authentication == 'steam':
+            try:
+                self.network.check()
+            except Exception:
+                self.status.setText('Connect the isolated VPN before signing in.')
+                self.steam_form.setRowVisible(self.vpn_button, True)
+                return
+            self.pending_password = self.password.text()
+            self.password.clear()
+            self.steam_form.setRowVisible(self.guard_row, False)
         try:
             if not self.authentication:
                 app = int(self.appid.text())
@@ -192,6 +257,7 @@ class DownloadDialog(QDialog):
             if stage is not None:
                 try: stage.rmdir()  # Only remove an empty staging folder created by this attempt.
                 except OSError: pass
+            if self.authentication == 'steam': self.pending_password = ''
             self.status.setText(str(error)); return
         QSettings('Playlite', 'SteamDownloader').setValue('steam_account', self.username.text().strip())
         self.busy = True; self.fetch.setEnabled(False); self.start_button.setEnabled(False)
@@ -203,7 +269,7 @@ class DownloadDialog(QDialog):
         self.process.finished.connect(self.finished)
         self.process.errorOccurred.connect(self.process_error)
         self.process.start('docker', args)
-        self.status.setText('Watch the log for Steam password and Steam Guard prompts.' if self.authentication else 'Downloading using your saved Steam session. Incomplete files remain in .playlite-download.')
+        self.status.setText('Signing in to Steam…' if self.authentication else 'Downloading using your saved Steam session. Incomplete files remain in .playlite-download.')
 
     def read_output(self):
         text = bytes(self.process.readAllStandardOutput()).decode('utf-8', errors='replace')
@@ -211,14 +277,24 @@ class DownloadDialog(QDialog):
         self.log.insertPlainText(text)
         self.log.ensureCursorVisible()
         if self.authentication:
-            if 'Please enter your 2 factor auth code' in text:
-                self.status.setText('Enter the Steam Guard code from your authenticator app below.')
-            elif 'Please enter the authentication code' in text:
-                self.status.setText('Enter the Steam Guard code sent to your email below.')
+            if 'Please enter your 2 factor auth code' in text or 'Please enter the authentication code' in text:
+                self.status.setText('Enter your Steam Guard code from your authenticator app.' if '2 factor' in text else 'Enter the Steam Guard code sent to your email.')
+                if self.authentication == 'steam':
+                    self.steam_form.setRowVisible(self.guard_row, True)
+                    self.response.setFocus()
             elif 'Enter account password' in text:
-                self.status.setText('Enter your Steam password below, then choose Send securely.')
+                if self.authentication == 'steam' and self.pending_password:
+                    self.process.write((self.pending_password + '\n').encode())
+                    self.pending_password = ''
+                else:
+                    self.status.setText('Enter your Steam password below.')
+                    if self.authentication == 'steam':
+                        self.steam_form.setRowVisible(self.guard_row, True)
+                        self.response.setPlaceholderText('Steam password')
             elif 'Use the Steam Mobile App' in text:
-                self.status.setText('Approve this sign-in in the Steam mobile app. Waiting for confirmation…')
+                self.status.setText('Approve this sign-in in the Steam mobile app. Waiting for approval…')
+                if self.authentication == 'steam':
+                    self.steam_form.setRowVisible(self.guard_row, False)
         prompts = ('Enter account password', 'Please enter your 2 factor auth code', 'Please enter the authentication code')
         if not self.authentication and not getattr(self, 'auth_needed', False) and any(prompt in self.output for prompt in prompts):
             self.auth_needed = True
@@ -257,6 +333,19 @@ class DownloadDialog(QDialog):
                 self.temporary.cleanup(); self.temporary = None
         self.busy = False; self.fetch.setEnabled(True); self.start_button.setEnabled(True)
         self.cancel.setText('Close')
+        if self.authentication == 'steam':
+            self.pending_password = ''
+            self.steam_form.setRowVisible(self.guard_row, False)
+            self.login_succeeded = code == 0 and 'could not be saved' not in self.status.text() and self.status.text() == 'Steam authentication completed.'
+            self.network.steam_confirmed = self.login_succeeded
+            if self.login_succeeded:
+                self.status.setText(f'Signed in as {self.username.text().strip()}.')
+                self.steam_form.setRowVisible(self.password, False)
+                self.start_button.hide()
+                self.cancel.setText('Done')
+            else:
+                self.start_button.setText('Try again')
+
         if getattr(self, 'auth_needed', False):
             self.status.setText('Steam requires a new login. Open plugin settings → Steam login and sign in again. Incomplete files were retained.')
 
@@ -281,4 +370,6 @@ class DownloadDialog(QDialog):
         self.moon.session = None
         self.rows = []
         self.key.clear(); self.response.clear()
+        if self.authentication == 'steam':
+            self.password.clear(); self.pending_password = ''
         super().closeEvent(event)
