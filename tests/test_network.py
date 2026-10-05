@@ -92,7 +92,7 @@ class ConnectionTests(unittest.TestCase):
             if args[0] == 'logs': return logs
             return ''
         state = {'State': {'Running': True, 'Health': {'Status': 'unhealthy'}}}
-        with patch.object(network, 'docker', side_effect=docker), patch.object(network, 'inspect', return_value=state), patch.object(network, 'start_guardian'):
+        with patch.object(network, 'docker', side_effect=docker), patch.object(network, 'inspect', return_value=state), patch.object(network, 'start_guardian'), patch.object(network.cancelled, 'wait'):
             with self.assertRaises(RuntimeError) as error:
                 network.connect(Preferences(), 'test-service-user', 'test-service-password', deadline=5,
                                 progress=lambda text: progress(network, text))
@@ -105,7 +105,7 @@ class ConnectionTests(unittest.TestCase):
         error, calls = self.run_failed_connect('AUTH: Received control message: AUTH_FAILED\nsecret diagnostic detail')
         self.assertIn('NordVPN rejected', error)
         self.assertNotIn('secret diagnostic detail', error)
-        self.assertEqual(sum(args[0] == 'logs' for args in calls), 2)
+        self.assertEqual(sum(args[0] == 'logs' for args in calls), 5)
 
     def test_cancel_interrupts_connection_and_cleans_up(self):
         error, calls = self.run_failed_connect(progress=lambda network, text: network.cancel() if text.startswith('Connecting') else None)
@@ -153,10 +153,11 @@ class RetryTests(unittest.TestCase):
     def test_repeated_rejection_is_bounded(self):
         from downloader.network import AuthenticationRejected
         network=Network()
-        with patch.object(network, '_connect_once', side_effect=AuthenticationRejected('rejected')) as connect, patch.object(network.cancelled, 'wait'):
+        with patch.object(network, '_connect_once', side_effect=AuthenticationRejected('rejected')) as connect, patch.object(network.cancelled, 'wait') as wait:
             with self.assertRaisesRegex(RuntimeError, 'can be temporary'):
                 network.connect(Preferences(), 'user', 'password')
-            self.assertEqual(connect.call_count,2)
+            self.assertEqual(connect.call_count,5)
+            self.assertEqual([call.args[0] for call in wait.call_args_list],[5,10,20,30])
 
     def test_cancellation_during_retry_never_starts_second_attempt(self):
         from downloader.network import AuthenticationRejected

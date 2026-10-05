@@ -20,7 +20,11 @@ iptables -A PLAYLITE_WORKER -j REJECT
 iptables -I OUTPUT 1 -m owner --uid-owner 65534 -j PLAYLITE_WORKER
 '''
 
-class AuthenticationRejected(RuntimeError):
+class ConnectionAttemptFailed(RuntimeError):
+    pass
+
+
+class AuthenticationRejected(ConnectionAttemptFailed):
     pass
 
 
@@ -86,16 +90,18 @@ class Network:
         return 'Disconnected. Downloads remain disabled.'
 
     def connect(self, preferences, username, password, deadline=90, progress=lambda text: None):
-        limit = time.monotonic() + deadline
-        for attempt in range(2):
+        delays = (5, 10, 20, 30)
+        for attempt in range(5):
             self.check_cancelled()
+            progress(f'NordVPN connection attempt {attempt + 1}/5…')
             try:
-                return self._connect_once(preferences, username, password, max(0, limit - time.monotonic()), progress)
-            except AuthenticationRejected:
-                if attempt or limit - time.monotonic() <= 2:
-                    raise AuthenticationRejected('NordVPN rejected the connection attempts. This can be temporary; the saved credentials have not been changed. Try again later, and check the service credentials if rejection persists.') from None
-                progress('NordVPN rejected the first connection. Retrying once with automatic server selection… Cancel is available.')
-                self.cancelled.wait(2)
+                return self._connect_once(preferences, username, password, deadline, progress)
+            except ConnectionAttemptFailed:
+                if attempt == 4:
+                    raise ConnectionAttemptFailed('NordVPN failed all 5 connection attempts. This can be temporary; saved credentials have not been changed. Try again later, and check the service credentials if rejection persists.') from None
+                delay = delays[attempt]
+                progress(f'NordVPN attempt {attempt + 1}/5 failed. Waiting {delay}s before attempt {attempt + 2}/5… Cancel is available.')
+                self.cancelled.wait(delay)
                 self.check_cancelled()
 
     def _connect_once(self, preferences, username, password, deadline=90, progress=lambda text: None):
@@ -147,7 +153,7 @@ class Network:
                 progress(f'Connecting to NordVPN ({elapsed}s / {deadline:.0f}s)… Cancel is available.')
                 data = self.inspect()
                 if not data['State']['Running']:
-                    raise RuntimeError('The VPN stopped before establishing a tunnel.')
+                    raise ConnectionAttemptFailed('The VPN stopped before establishing a tunnel.')
                 logs = self.docker('logs', '--tail', '80', self.container)
                 if data['State'].get('Health', {}).get('Status') == 'healthy':
                     progress('Tunnel connected. Verifying isolation and public IP…')
@@ -158,7 +164,7 @@ class Network:
                 if 'AUTH_FAILED' in logs:
                     raise AuthenticationRejected('NordVPN rejected this connection attempt.')
                 self.cancelled.wait(1)
-            raise RuntimeError('VPN connection timed out. Check the service credentials and country selection.')
+            raise ConnectionAttemptFailed('VPN connection timed out. Check the service credentials and country selection.')
         except Exception:
             self.disconnect()
             raise

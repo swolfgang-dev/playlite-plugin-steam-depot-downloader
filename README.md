@@ -89,3 +89,8 @@ no automatic installation/library entry or multi-depot orchestration is enabled.
 Cancellation removes the named worker and retains incomplete output. A real
 Steam-authenticated game-file download still requires interactive login and has
 not yet been verified end to end.
+
+Connection failures caused by authentication rejection, tunnel timeout or a stopped
+gateway are retried up to five total attempts, with waits of 5, 10, 20 and 30
+seconds. Each attempt has its own 90-second tunnel readiness timeout. Cancellation
+also interrupts retry waits. Unsafe configuration and Docker errors are not retried.
