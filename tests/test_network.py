@@ -143,10 +143,13 @@ class ConnectionTests(unittest.TestCase):
             '-N PLAYLITE_WORKER\n-A PLAYLITE_WORKER -o tun0 -j RETURN\n-A PLAYLITE_WORKER -j REJECT --reject-with icmp-port-unreachable',
             '1.1.1.1 dev tun0 src 10.1.0.1',
             '203.0.113.5',
+            '[ca2293.nordvpn.com] Peer Connection Initiated with [AF_INET]203.0.113.1:1194',
         ]
         state = {'State': {'Running': True, 'Health': {'Status': 'healthy'}}}
         with patch.object(network, 'inspect', return_value=state), patch.object(network, 'docker', side_effect=outputs), patch.object(network, 'probe_args', return_value=['probe']):
-            self.assertIn('203.0.113.5', network.check())
+            status = network.check()
+            self.assertIn('203.0.113.5', status)
+            self.assertIn('ca2293.nordvpn.com', status)
 
 if __name__ == '__main__': unittest.main()
 
@@ -174,3 +177,14 @@ class RetryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'cancelled'):
                 network.connect(Preferences(), 'user', 'password')
             self.assertEqual(connect.call_count,1)
+
+class ConnectedServerTests(unittest.TestCase):
+    def test_reports_latest_established_peer_after_recovery(self):
+        network = Network()
+        with patch.object(network, 'docker', return_value='[ca1.nordvpn.com] Peer Connection Initiated\n[ca2.nordvpn.com] Peer Connection Initiated'):
+            self.assertEqual(network.connected_server(), 'ca2.nordvpn.com')
+
+    def test_does_not_report_requested_server_as_connected(self):
+        network = Network()
+        with patch.object(network, 'docker', return_value='Requested server ca1.nordvpn.com'):
+            self.assertIsNone(network.connected_server())

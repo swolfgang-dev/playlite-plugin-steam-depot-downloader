@@ -208,6 +208,13 @@ class Network:
                 '--mount', f'type=bind,src={path},dst=/etc/resolv.conf,readonly',
                 '--entrypoint', '/bin/sh', IMAGE, '-c', command]
 
+    def connected_server(self):
+        """Read the server identified by the latest established OpenVPN peer."""
+        import re
+        logs = self.docker('logs', '--tail', '200', self.container)
+        peers = re.findall(r'\[([a-z]{2}\d+\.nordvpn\.com)\] Peer Connection Initiated', logs)
+        return peers[-1] if peers else None
+
     def check(self):
         if not self.container or not self.directory:
             raise RuntimeError('Connect the VPN from this settings window before signing into Moon or downloading. A previous connection must be reconnected after restarting or reloading the plugin.')
@@ -230,4 +237,5 @@ class Network:
         address = self.docker(*self.probe_args('wget -q -T 10 -O - https://api.ipify.org'), timeout=20)
         import ipaddress
         address = str(ipaddress.ip_address(address))
-        return 'VPN connected. Isolated public IP: ' + address + '. Isolated download workers are ready.'
+        server = self.connected_server()
+        return ('VPN connected to ' + server if server else 'VPN connected (server name unavailable)') + '. Isolated public IP: ' + address + '. Isolated download workers are ready.'
