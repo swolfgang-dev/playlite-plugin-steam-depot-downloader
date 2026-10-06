@@ -10,7 +10,7 @@ class QueueRunner(DownloadDialog):
     def __init__(self,network,window,queue,entry,snapshot):
         super().__init__(network,window)
         self.queue_runner=True;self.queue=queue;self.entry=entry;self.auto_started=True
-        self.appid.setText(str(snapshot['app']));self.pack_app=snapshot['app']
+        self.selected_app=snapshot['app'];self.appid.setText(entry.name);self.pack_app=snapshot['app']
         self.rows=list(snapshot['rows']);self.content_plan=list(snapshot['plan'])
         self.content_info=snapshot['info'];self.game_name=entry.name
         self.username.setText(snapshot['username']);self.destination.setText(entry.destination)

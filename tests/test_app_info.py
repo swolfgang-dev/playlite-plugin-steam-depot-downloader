@@ -153,3 +153,18 @@ class MetadataOutputTests(unittest.TestCase):
         from downloader.app_info import metadata_output
         with self.assertRaisesRegex(RuntimeError,'timed out'):
             metadata_output([sys.executable,'-c','import time;time.sleep(10)'],timeout=.1)
+
+class ManifestPreparationTests(unittest.TestCase):
+    def test_provider_error_identifies_blocked_dlc_and_alternative_actions(self):
+        from downloader.app_info import prepare_content
+        info=fixture();rows=[Depot(i,1,b'data') for i in (11,12,13)]
+        fetch=Mock(side_effect=RuntimeError('The provider blocked the isolated HTTP worker with a browser challenge.'))
+        with self.assertRaisesRegex(RuntimeError,'Hubcap.*Expansion.*App ID 20.*browser challenge.*Unselect'):
+            prepare_content(info,rows,'linux',{20},'Hubcap',fetch)
+        fetch.assert_called_once_with(20)
+
+    def test_unselected_dlc_does_not_contact_its_provider(self):
+        from downloader.app_info import prepare_content
+        fetch=Mock();rows=[Depot(i,1,b'data') for i in (11,12,13)]
+        plan=prepare_content(fixture(),rows,'linux',set(),'Hubcap',fetch)
+        fetch.assert_not_called();self.assertEqual(len(plan),2)

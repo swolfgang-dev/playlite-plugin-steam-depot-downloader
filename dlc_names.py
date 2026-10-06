@@ -1,5 +1,9 @@
 """Resolve missing DLC titles without guessing from unrelated base-game depots."""
 import re
+import json
+from pathlib import Path
+
+NAME_OVERRIDES=json.loads(Path(__file__).with_name('dlc_name_overrides.json').read_text())
 from .app_info import content_depots
 
 
@@ -16,8 +20,9 @@ def resolve_names(info, rows, search):
     requests=0
     for entry in info['dlc']:
         if entry['name'].strip():continue
-        title=''
-        if requests<8:
+        override=NAME_OVERRIDES.get(str(entry['id']),{})
+        title=override.get('name','') if override.get('parent_app')==info['game']['id'] else ''
+        if not title and requests<8:
             requests+=1
             try:title=search.details(entry['id'])['name'].strip()
             except Exception:pass  # A missing store page must not block downloading.

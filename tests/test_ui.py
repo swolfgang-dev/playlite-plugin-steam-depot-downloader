@@ -217,7 +217,8 @@ class GameSelectionTests(unittest.TestCase):
         with patch.object(dialog,'fetch_pack') as fetch, patch.object(dialog,'load_selected_cover'):
             dialog.select_game(item)
             fetch.assert_called_once()
-        self.assertEqual(dialog.appid.text(),'736260')
+        self.assertEqual(dialog.appid.text(),'Baba Is You')
+        self.assertEqual(dialog.game_app(),736260)
         self.assertEqual(dialog.rows,[])
         self.assertEqual(dialog.depot.count(),0)
         dialog.close()
@@ -296,6 +297,23 @@ class SearchPickerTests(unittest.TestCase):
         dialog.search_results.addItem(item)
         with patch.object(dialog,'fetch_pack'),patch.object(dialog,'load_selected_cover'):
             dialog.select_game(item)
-        self.assertEqual(dialog.appid.text(),'736260')
+        self.assertEqual(dialog.appid.text(),'Baba Is You')
+        self.assertEqual(dialog.game_app(),736260)
         self.assertFalse(dialog.search_picker.isVisible())
+        dialog.close()
+
+class SelectedGameIdentityTests(unittest.TestCase):
+    def test_name_is_displayed_but_numeric_id_is_used_for_downloads(self):
+        from downloader.download_dialog import DownloadDialog
+        from unittest.mock import Mock
+        app=QApplication.instance() or QApplication([])
+        dialog=DownloadDialog(Mock())
+        with patch.object(dialog,'fetch_pack'),patch.object(dialog,'load_selected_cover'):
+            dialog.choose_game({'id':597220,'name':'West of Loathing'})
+        self.assertEqual(dialog.appid.text(),'West of Loathing')
+        self.assertEqual(dialog.game_app(),597220)
+        dialog.appid.setText('Different game')
+        with self.assertRaises(ValueError):dialog.game_app()
+        dialog.appid.setText('736260')
+        self.assertEqual(dialog.game_app(),736260)
         dialog.close()

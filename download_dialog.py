@@ -26,6 +26,7 @@ class DownloadDialog(QDialog):
         self.content_plan = []
         self.content_index = 0
         self.game_name = ''
+        self.selected_app = None
         self.owns_connection = False
         self.jobs = set()
         self.process = None
@@ -359,11 +360,18 @@ class DownloadDialog(QDialog):
     def select_game(self, item):
         self.choose_game(item.data(Qt.ItemDataRole.UserRole))
 
+    def game_app(self):
+        query=self.appid.text().strip()
+        if query.isdecimal():return int(query)
+        if self.selected_app is not None and query==self.game_name:return self.selected_app
+        raise ValueError('Search for and select a game first.')
+
     def choose_game(self, row):
         from .download_flow import game_folder
         self.search_generation += 1
         self.search_timer.stop()
-        self.appid.setText(str(row['id']))
+        self.selected_app = row['id']
+        self.appid.setText(row['name'])
         self.search_results.clear(); self.search_results.hide()
         self.rows = []; self.content_info = None; self.content_plan = []; self.depot.clear()
         if not self.authentication:
@@ -431,7 +439,7 @@ class DownloadDialog(QDialog):
         from playlite.add_game import AddGameEditor
         from playlite.app import save_game
         game={'Id':str(uuid.uuid4()),'Name':self.game_name,'InstallDirectory':self.destination.text(),
-              'Executable':executable,'Platforms':[],'IsInstalled':True,'MetadataIds':{'SteamMetadata':self.appid.text()}}
+              'Executable':executable,'Platforms':[],'IsInstalled':True,'MetadataIds':{'SteamMetadata':str(self.game_app())}}
         dialog=AddGameEditor(executable,parent.data,self,game=game)
         if dialog.exec()==QDialog.DialogCode.Accepted:
             parent.games=save_game(parent.data,parent.games,dialog.result_game)
@@ -478,7 +486,7 @@ class DownloadDialog(QDialog):
         for control in (self.appid,self.provider,self.depot,self.destination,self.dlc_list):
             control.setEnabled(enabled)
 
-    def task(self, operation, completed, progress=False):
+    def task(self, operation, completed, progress=False, on_error=None):
         if self.busy: return
         from .plugin import Job
         self.busy = True; self.set_content_enabled(False); self.fetch.setEnabled(False); self.start_button.setEnabled(False)
@@ -495,7 +503,9 @@ class DownloadDialog(QDialog):
             if result:
                 try: completed(result[0])
                 except Exception as error: self.status.setText(str(error))
-            else: self.status.setText(message)
+            else:
+                self.status.setText(message)
+                if on_error:on_error(message)
         job.signals.finished.connect(done)
         job.signals.progress.connect(self.status.setText)
         self.status.setText('Working through the isolated VPN…')
@@ -507,7 +517,7 @@ class DownloadDialog(QDialog):
 
     def fetch_pack(self):
         try:
-            app = int(self.appid.text())
+            app = self.game_app()
             source = self.provider.currentText()
             username = self.username.text().strip()
         except Exception as error:
@@ -568,7 +578,7 @@ class DownloadDialog(QDialog):
         if self.authentication: return self.download()
         if self.busy: return
         try:
-            if not self.content_info or int(self.appid.text()) != self.pack_app:
+            if not self.content_info or self.game_app() != self.pack_app:
                 raise ValueError('Choose a game and load its content information first.')
             if not self.destination.text(): raise ValueError('Choose a download folder.')
             destination=Path(self.destination.text()).expanduser().resolve()
@@ -580,15 +590,10 @@ class DownloadDialog(QDialog):
         except Exception as error:
             self.status.setText(str(error)); return
         def operation():
-            from .app_info import build_plan, content_depots, matches_platform
+            from .app_info import prepare_content
             credential=self.moon.token() if source=='Luie' else (HubcapKeyWallet().read() or {}).get('key','') if source=='Hubcap' else ''
-            available={row.id for row in packs[self.pack_app]}
-            for entry in info['dlc']:
-                if entry['id'] not in selected: continue
-                required={key for key,row in content_depots(info,entry).items() if matches_platform(row,platform)}
-                if required-available:
-                    packs[entry['id']]=self.transport.fetch(source,entry['id'],credential)
-            return build_plan(info,packs,platform,selected)
+            return prepare_content(info,packs[self.pack_app],platform,selected,source,
+                                   lambda app:self.transport.fetch(source,app,credential))
         def done(plan):
             self.content_plan=plan; self.content_index=0
             self.total_downloaded=0; self.total_uncompressed=0; self.batch_started_at=time.monotonic()
@@ -607,7 +612,7 @@ class DownloadDialog(QDialog):
                 self.status.setText('Added to Downloads. You can choose another game or close this window.')
                 window.downloads_panel.set_open(True)
             else:self.download()
-        self.task(operation,done)
+        self.task(operation,done,on_error=lambda _:self.progress_info.setText('Nothing added to queue. Manifest preparation failed.'))
 
     def download(self):
         if self.busy: return
@@ -624,7 +629,7 @@ class DownloadDialog(QDialog):
             self.steam_form.setRowVisible(self.guard_row, False)
         try:
             if not self.authentication:
-                app = int(self.appid.text())
+                app = self.game_app()
                 if not self.rows or app != self.pack_app: raise ValueError('Fetch the manifest pack for this App ID first.')
                 if not self.destination.text():raise ValueError('Choose a download folder.')
                 destination = Path(self.destination.text()).expanduser().resolve()

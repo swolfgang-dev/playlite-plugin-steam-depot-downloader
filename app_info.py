@@ -124,3 +124,18 @@ def build_plan(info, packs, platform, selected):
             seen.add(key); plan.append((entry['id'], rows[key], entry['name']))
     if not plan: raise ValueError('No downloadable depots match this platform.')
     return plan
+
+
+def prepare_content(info, base_rows, platform, selected, source, fetch):
+    """Resolve selected DLC packs before handing any game to the download queue."""
+    app=info['game']['id'];packs={app:list(base_rows)}
+    available={row.id for row in base_rows}
+    for entry in info['dlc']:
+        if entry['id'] not in selected:continue
+        required={key for key,row in content_depots(info,entry).items() if matches_platform(row,platform)}
+        if required-available:
+            try:packs[entry['id']]=fetch(entry['id'])
+            except Exception as error:
+                title=entry['name'] or f'DLC {entry["id"]}'
+                raise RuntimeError(f'{source} could not fetch manifests for {title} (App ID {entry["id"]}). {error} Unselect this DLC, or choose another manifest provider under Advanced.') from error
+    return build_plan(info,packs,platform,selected)
