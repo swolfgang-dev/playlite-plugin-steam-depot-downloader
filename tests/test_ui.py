@@ -256,6 +256,7 @@ class CleanDownloaderTests(unittest.TestCase):
         from downloader.providers import Depot
         from unittest.mock import Mock
         dialog=DownloadDialog(Mock())
+        dialog.appid.setText('736260')
         rows=[Depot(736261,1,b'x',name='Baba Is You Content'),Depot(736263,2,b'x',name='Baba Is You Linux')]
         with patch.object(dialog,'task',side_effect=lambda operation,done:done((rows,{'game':{'id':736260,'name':'Baba Is You','owned':True,'depots':{'736261':{'config':{'oslist':'windows'},'manifests':{'public':{'gid':'1'}}},'736263':{'config':{'oslist':'linux'},'manifests':{'public':{'gid':'2'}}}}},'dlc':[]}))),patch('downloader.download_dialog.QSettings'):
             dialog.fetch_pack()

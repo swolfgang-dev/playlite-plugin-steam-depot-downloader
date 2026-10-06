@@ -45,7 +45,7 @@ class DownloadDialog(QDialog):
         notice = QLabel('Downloads use a separate Steam session inside the VPN. Use an account that owns the game. Moon login is saved in KWallet and restored automatically. Select optional DLC; the destination must be empty.')
         notice.setWordWrap(True)
         form.addRow(notice)
-        self.appid = QLineEdit('736260')
+        self.appid = QLineEdit()
         self.appid.setPlaceholderText('Steam App ID or game name')
         search_button = QPushButton('Search')
         search_button.clicked.connect(self.open_search)
