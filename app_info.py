@@ -1,4 +1,5 @@
 """Steam depot/DLC discovery inside the guarded, authenticated worker."""
+import copy
 import base64
 import json
 from pathlib import Path
@@ -89,54 +90,129 @@ def validate_info(info, app):
 def depot_entries(info):
     depots = info.get('depots')
     if not isinstance(depots, dict): return {}
-    return {int(key):value for key,value in depots.items() if key.isdecimal() and 0 < int(key) < 2**32 and isinstance(value, dict) and (value.get('depotfromapp') or (isinstance(value.get('manifests'),dict) and value['manifests'].get('public')))}
+    return {int(key):value for key,value in depots.items() if key.isdecimal() and 0 < int(key) < 2**32 and isinstance(value, dict) and (value.get('depotfromapp') or isinstance(value.get('manifests'),dict) or isinstance(value.get('encryptedmanifests'),dict))}
 
 
-def matches_platform(depot, platform):
+def matches_platform(depot, platform, language='english', architecture='64'):
     config = depot.get('config', {})
     if not isinstance(config, dict): return False
-    oslist = str(config.get('oslist','')).split(',')
-    return (oslist == [''] or platform in oslist) and config.get('language','english') in ('','english') and str(config.get('osarch','64')) in ('','64') and str(config.get('lowviolence','0')) != '1'
+    oslist = [item.strip().lower() for item in str(config.get('oslist','')).split(',')]
+    return (oslist == [''] or platform in oslist) and str(config.get('language','')).lower() in ('',language) and str(config.get('osarch','')) in ('',architecture) and str(config.get('lowviolence','0')) != '1'
 
 
 def content_depots(info, dlc=None):
     if dlc is None:
         return {key:value for key,value in depot_entries(info['game']).items() if not str(value.get('dlcappid','')).strip('0')}
     result = {key:value for key,value in depot_entries(info['game']).items() if str(value.get('dlcappid','')) == str(dlc['id'])}
-    result.update(depot_entries(dlc))
+    # Parent placement and properties take precedence over duplicate child entries.
+    for key,value in depot_entries(dlc).items():result.setdefault(key,value)
     return result
 
 
-def build_plan(info, packs, platform, selected):
-    """Include common/platform depots and selected DLC; never guess associations."""
-    entries = [info['game'], *[row for row in info['dlc'] if row['id'] in selected]]
-    if platform not in ('linux','windows','macos'): raise ValueError('Select a supported platform.')
-    if set(selected) - {row['id'] for row in info['dlc']}: raise ValueError('Unknown DLC selection.')
-    plan = []; seen = set()
-    for entry in entries:
-        depots = content_depots(info, None if entry is info['game'] else entry)
-        applicable = {key:row for key,row in depots.items() if matches_platform(row, platform)}
-        rows = {row.id:row for row in packs.get(info['game']['id'], [])}
-        rows.update({row.id:row for row in packs.get(entry['id'], [])})
-        for key in applicable:
-            if key in seen: continue
-            if key not in rows: raise ValueError(f'Manifest provider is missing depot {key} for {entry["name"]}. No download has started.')
-            seen.add(key); plan.append((entry['id'], rows[key], entry['name']))
-    if not plan: raise ValueError('No downloadable depots match this platform.')
+def resolve_shared(info, fetch, limit=20):
+    """Inherit shared-depot properties from the source app, without changing order."""
+    result=copy.deepcopy(info);cache={row['id']:row for row in [result['game'],*result['dlc']]}
+    requests=0
+    def load(source):
+        nonlocal requests
+        if source not in cache:
+            if requests>=limit:raise ValueError('Shared-depot discovery exceeded its limit.')
+            requests+=1;fetched=fetch(source);validate_info(fetched,source)
+            for row in [fetched['game'],*fetched['dlc']]:cache.setdefault(row['id'],row)
+        return cache[source]
+    def resolve(app,key,node,path):
+        nonlocal requests
+        source=node.get('depotfromapp')
+        if not source:return node
+        try:source=int(source)
+        except (TypeError,ValueError):raise ValueError('Invalid shared-depot source app.')
+        if not 0<source<2**32 or (source,key) in path:raise ValueError('Cyclic or invalid shared-depot metadata.')
+        origin=depot_entries(load(source)).get(key)
+        if origin is None:raise ValueError(f'Steam did not return shared depot {key} from app {source}.')
+        inherited=resolve(source,key,origin,path|{(source,key)})
+        # Steam shared depots inherit OS, language, architecture and DLC requirements.
+        merged=dict(node);merged.update(inherited);merged['depotfromapp']=str(source)
+        merged['_source_app']=inherited.get('_source_app',source)
+        return merged
+    entries=[result['game'],*result['dlc']];known={row['id'] for row in entries};cursor=0
+    while cursor<len(entries):
+        entry=entries[cursor];cursor+=1
+        for key,node in depot_entries(entry).items():
+            resolved=resolve(entry['id'],key,node,{(entry['id'],key)})
+            entry['depots'][str(key)]=resolved
+            dlc=int(resolved.get('dlcappid','0') or 0)
+            if dlc and dlc not in known:
+                if len(result['dlc'])>=100:raise ValueError('Shared-depot DLC discovery exceeded its limit.')
+                child=load(dlc);known.add(dlc);result['dlc'].append(child);entries.append(child)
+    return result
+
+
+def manifest_id(node,branch='public'):
+    manifests=node.get('manifests',{})
+    value=manifests.get(branch) if isinstance(manifests,dict) else None
+    # Steam uses the public depot manifest when the chosen branch has no override.
+    if value is None and branch!='public':value=manifests.get('public') if isinstance(manifests,dict) else None
+    encrypted=node.get('encryptedmanifests',{})
+    if isinstance(encrypted,dict) and branch in encrypted:
+        raise ValueError(f'Branch {branch} requires a password; protected branches are not supported yet.')
+    if isinstance(value,dict):value=value.get('gid')
+    try:gid=int(value)
+    except (ValueError,TypeError):return None
+    return gid if 0<gid<2**64 else None
+
+
+def ordered_content(info, selected):
+    """Keep base-app Steam order, inserting selected parent-managed DLC in place."""
+    known={row['id']:row for row in info['dlc']}
+    if set(selected)-known.keys():raise ValueError('Unknown DLC selection.')
+    seen=set();result=[]
+    for key,node in depot_entries(info['game']).items():
+        dlc=int(node.get('dlcappid','0') or 0)
+        if dlc and dlc not in selected:continue
+        owner=known.get(dlc,info['game']);seen.add(key)
+        result.append((owner,key,dict(node,_download_app=info['game']['id'])))
+    for entry in info['dlc']:
+        if entry['id'] not in selected:continue
+        for key,node in depot_entries(entry).items():
+            if key not in seen:seen.add(key);result.append((entry,key,node))
+    return result
+
+
+def build_plan(info, packs, platform, selected, language='english', architecture='64', branch='public'):
+    """Steam's depot ordering/filtering, with explicit user DLC selection."""
+    if platform not in ('linux','windows','macos'):raise ValueError('Select a supported platform.')
+    if architecture not in ('32','64') or not language or not branch:raise ValueError('Select language, architecture and branch.')
+    plan=[]
+    for entry,key,node in ordered_content(info,selected):
+        if not matches_platform(node,platform,language,architecture):continue
+        expected=manifest_id(node,branch)
+        if expected is None and not node.get('depotfromapp'):continue
+        source=int(node.get('_source_app',node.get('_download_app',entry['id'])))
+        rows={row.id:row for row in packs.get(info['game']['id'],[])}
+        rows.update({row.id:row for row in packs.get(entry['id'],[])})
+        rows.update({row.id:row for row in packs.get(source,[])})
+        row=rows.get(key)
+        if row is None:raise ValueError(f'Manifest provider is missing depot {key} for {entry["name"]}. No download has started.')
+        if expected is not None and row.manifest!=expected:
+            raise ValueError(f'Provider manifest for depot {key} does not match Steam branch {branch}. Refresh or choose another provider; no download has started.')
+        plan.append((source,row,entry['name']))
+    if not plan:raise ValueError('No downloadable depots match these content settings.')
     return plan
 
 
-def prepare_content(info, base_rows, platform, selected, source, fetch):
-    """Resolve selected DLC packs before handing any game to the download queue."""
-    app=info['game']['id'];packs={app:list(base_rows)}
-    available={row.id for row in base_rows}
-    for entry in info['dlc']:
-        if entry['id'] not in selected:continue
-        required={key for key,row in content_depots(info,entry).items() if matches_platform(row,platform)}
-        if required-available:
-            try:packs[entry['id']]=fetch(entry['id'])
+def prepare_content(info, base_rows, platform, selected, source, fetch, language='english', architecture='64', branch='public'):
+    """Resolve every required manifest before handing a game to the download queue."""
+    app=info['game']['id'];packs={app:list(base_rows)};available={row.id for row in base_rows}
+    for entry,key,node in ordered_content(info,selected):
+        if not matches_platform(node,platform,language,architecture) or key in available:continue
+        if manifest_id(node,branch) is None and not node.get('depotfromapp'):continue
+        owner=int(node.get('_source_app',entry['id']))
+        if owner not in packs:
+            try:
+                packs[owner]=fetch(owner);available.update(row.id for row in packs[owner])
+                entry.pop('manifest_error',None);entry.pop('manifest_provider',None)
             except Exception as error:
                 entry['manifest_error']=str(error);entry['manifest_provider']=source
                 title=entry['name'] or f'DLC {entry["id"]}'
-                raise RuntimeError(f'{source} could not fetch manifests for {title} (App ID {entry["id"]}). {error} Unselect this DLC, or choose another manifest provider under Advanced.') from error
-    return build_plan(info,packs,platform,selected)
+                raise RuntimeError(f'{source} could not fetch manifests for {title} (App ID {owner}). {error} Unselect this DLC, or choose another manifest provider under Advanced.') from error
+    return build_plan(info,packs,platform,selected,language,architecture,branch)

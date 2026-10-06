@@ -14,6 +14,9 @@ class QueueRunner(DownloadDialog):
         self.rows=list(snapshot['rows']);self.content_plan=list(snapshot['plan'])
         self.content_info=snapshot['info'];self.game_name=entry.name
         self.username.setText(snapshot['username']);self.destination.setText(entry.destination)
+        branch=snapshot.get('branch','public')
+        if self.branch.findData(branch)<0:self.branch.addItem(branch,branch)
+        self.branch.setCurrentIndex(self.branch.findData(branch))
         self.content_index=0;self.batch_started_at=time.monotonic()
         self.connecting=False;self.done=False
 

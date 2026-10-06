@@ -27,7 +27,7 @@ class ContentTests(unittest.TestCase):
 
     def test_selected_expansion_is_included_once(self):
         self.info['dlc'][0]['depots']={'21':depot('linux')}
-        self.assertEqual([(app,row.id) for app,row,_ in build_plan(self.info,self.packs,'linux',{20})],[(10,11),(10,12),(20,21)])
+        self.assertEqual([(app,row.id) for app,row,_ in build_plan(self.info,self.packs,'linux',{20})],[(10,11),(10,12),(10,21)])
 
     def test_missing_manifest_aborts_entire_plan(self):
         self.packs[10]=self.packs[10][:3]
@@ -112,6 +112,33 @@ class ChecklistTests(unittest.TestCase):
         self.assertIn('Steam/CDN access has not been tested',dialog.dlc_list.item(0).toolTip())
         dialog.close()
 
+    def test_owned_dlc_is_default_but_manual_selection_is_allowed(self):
+        from PyQt6.QtCore import Qt
+        dialog=self.dialog();dialog.default_dlc_selection={20,30}
+        dialog.update_dlc_list()
+        self.assertEqual(dialog.dlc_list.item(0).checkState(),Qt.CheckState.Checked)
+        self.assertEqual(dialog.dlc_list.item(2).checkState(),Qt.CheckState.Unchecked)
+        dialog.dlc_list.item(2).setCheckState(Qt.CheckState.Checked)
+        dialog.update_dlc_list()
+        self.assertEqual(dialog.dlc_list.item(2).checkState(),Qt.CheckState.Checked)
+        dialog.close()
+
+    def test_known_cdn_failure_is_visible_without_dropping_selection(self):
+        from PyQt6.QtCore import Qt
+        dialog=self.dialog();dialog.dlc_list.item(0).setCheckState(Qt.CheckState.Checked)
+        dialog.content_info['_cdn_failures']={21:(1,'Steam rejected the CDN check')}
+        dialog.update_dlc_list();item=dialog.dlc_list.item(0)
+        self.assertIn('CDN access check failed',item.text())
+        self.assertIn('Steam rejected',item.toolTip())
+        self.assertEqual(item.checkState(),Qt.CheckState.Checked)
+        dialog.close()
+
+    def test_stale_dlc_manifest_is_identified_before_queueing(self):
+        dialog=self.dialog();dialog.rows[-1]=Depot(21,2,b'manifest')
+        dialog.update_dlc_list()
+        self.assertIn('Manifest version mismatch',dialog.dlc_list.item(0).text())
+        dialog.close()
+
     def test_intermediate_success_does_not_publish_and_final_success_does(self):
         import tempfile
         from pathlib import Path
@@ -185,3 +212,58 @@ class ManifestPreparationTests(unittest.TestCase):
         fetch=Mock();rows=[Depot(i,1,b'data') for i in (11,12,13)]
         plan=prepare_content(fixture(),rows,'linux',set(),'Hubcap',fetch)
         fetch.assert_not_called();self.assertEqual(len(plan),2)
+
+class SteamPlanningTests(unittest.TestCase):
+    def test_parent_dlc_keeps_steam_override_order(self):
+        info=fixture();info['game']['depots']={'21':depot('linux',20),'11':depot(),'12':depot('linux')}
+        rows=[Depot(i,1,b'manifest') for i in (11,12,21)]
+        self.assertEqual([row.id for _,row,_ in build_plan(info,{10:rows},'linux',{20})],[21,11,12])
+
+    def test_shared_source_properties_and_app_are_used(self):
+        from downloader.app_info import resolve_shared
+        info=fixture();info['game']['depots']={'11':{'depotfromapp':'100','config':{'language':'english'}}}
+        shared={'game':{'id':100,'name':'Shared','depots':{'11':depot('linux')}},'dlc':[]}
+        shared['game']['depots']['11']['config']['language']='german'
+        fetch=Mock(return_value=shared);resolved=resolve_shared(info,fetch)
+        rows=[Depot(11,1,b'manifest')]
+        with self.assertRaisesRegex(ValueError,'No downloadable'):build_plan(resolved,{10:rows},'linux',set())
+        self.assertEqual(build_plan(resolved,{10:rows},'linux',set(),'german')[0][0],100)
+        fetch.assert_called_once_with(100)
+
+    def test_shared_cycles_and_missing_source_fail_closed(self):
+        from downloader.app_info import resolve_shared
+        info=fixture();info['game']['depots']={'11':{'depotfromapp':'100'}}
+        source={'game':{'id':100,'name':'Shared','depots':{'11':{'depotfromapp':'10'}}},'dlc':[]}
+        with self.assertRaisesRegex(ValueError,'Cyclic'):resolve_shared(info,Mock(return_value=source))
+        source['game']['depots']={}
+        with self.assertRaisesRegex(ValueError,'did not return'):resolve_shared(info,Mock(return_value=source))
+
+    def test_language_architecture_and_beta_choose_exact_manifests(self):
+        info=fixture();info['game']['depots']={'11':depot('linux')}
+        node=info['game']['depots']['11'];node['config'].update(language='german',osarch='32')
+        node['manifests']['beta']={'gid':'2'}
+        plan=build_plan(info,{10:[Depot(11,2,b'manifest')]},'linux',set(),'german','32','beta')
+        self.assertEqual(plan[0][1].manifest,2)
+        with self.assertRaisesRegex(ValueError,'does not match'):build_plan(info,{10:[Depot(11,1,b'manifest')]},'linux',set(),'german','32','beta')
+
+    def test_missing_beta_override_uses_public_but_protected_beta_is_rejected(self):
+        from downloader.app_info import manifest_id
+        node=depot();self.assertEqual(manifest_id(node,'beta'),1)
+        node['encryptedmanifests']={'beta':{'encrypted_gid':'secret'}}
+        with self.assertRaisesRegex(ValueError,'requires a password'):manifest_id(node,'beta')
+
+    def test_source_pack_is_fetched_for_missing_shared_depot(self):
+        from downloader.app_info import prepare_content
+        info=fixture();info['game']['depots']={'11':dict(depot('linux'),depotfromapp='100',_source_app=100)}
+        fetch=Mock(return_value=[Depot(11,1,b'manifest')])
+        self.assertEqual(prepare_content(info,[],'linux',set(),'Hubcap',fetch)[0][0],100)
+        fetch.assert_called_once_with(100)
+
+    def test_shared_depot_discovers_its_source_dlc_requirement(self):
+        from downloader.app_info import resolve_shared
+        info=fixture();info['game']['depots']={'11':{'depotfromapp':'100'}}
+        shared={'game':{'id':100,'name':'Shared','depots':{'11':depot('linux',200)}},'dlc':[{'id':200,'name':'Shared expansion','owned':True,'depots':{}}]}
+        fetch=Mock(return_value=shared);resolved=resolve_shared(info,fetch)
+        self.assertIn(200,{row['id'] for row in resolved['dlc']})
+        self.assertEqual(build_plan(resolved,{10:[Depot(11,1,b'manifest')]},'linux',{200})[0][0],100)
+        fetch.assert_called_once_with(100)

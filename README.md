@@ -166,3 +166,26 @@ Selected manifests are prepared before queueing; failures are displayed on the
 DLC while preserving its selection so the user can retry or explicitly uncheck it.
 Manifest presence does not confirm Steam/CDN access. Authentication, CDN access,
 network interruptions, and filesystem errors can still fail during a download.
+
+Download planning now follows Steam's depot metadata order, including
+parent-managed DLC in its original position. Separately managed DLC is appended
+in discovery order, and shared depots inherit their source app's OS, language,
+architecture, DLC association, and manifest settings. Source app metadata requests
+are bounded to 20, with cycle detection. Later depots can replace earlier files
+inside private staging; existing destination files are never overwritten.
+
+**Advanced** exposes language, architecture, and unprotected branch choices.
+Defaults are English, 64-bit, and public. Provider manifest IDs must match Steam's
+selected branch (falling back to public where the branch has no depot override);
+stale or mismatched packs stop before queueing. Password-protected branches are
+not supported. DLC owned by the separate Steam account is selected initially;
+users can change that selection, and package ownership is not a download gate.
+
+Before queueing, each depot is checked in the verified VPN using the saved Steam
+session. The worker decrypts its supplied manifest and downloads one small CDN
+chunk into memory, verifying it through SteamKit. These samples are real network
+transfers, but no game files are installed. Empty depots are recorded separately.
+Authentication or CDN failures prevent queueing. A successful sample confirms
+access at that moment; later chunks, expired sessions, network interruptions and
+disk errors can still fail. The native worker must be rebuilt with the current
+metadata/preflight patches using tools/build_worker.py. Host Steam is never read.

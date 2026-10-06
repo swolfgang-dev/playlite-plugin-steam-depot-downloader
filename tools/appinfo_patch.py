@@ -11,7 +11,7 @@ METHOD = r'''
             {
                 await steam3.RequestAppInfo(id);
                 return new {
-                    id, name = GetSteam3AppSection(id, EAppInfoSection.Common)?["name"].AsString() ?? "",
+                    id, owned = await AccountHasAccess(id, id), name = GetSteam3AppSection(id, EAppInfoSection.Common)?["name"].AsString() ?? "",
                     depots = Tree(GetSteam3AppSection(id, EAppInfoSection.Depots) ?? KeyValue.Invalid)
                 };
             }
@@ -26,7 +26,7 @@ METHOD = r'''
                 if (uint.TryParse(value.Trim(), out var id) && id > 0) ids.Add(id);
             if (ids.Count > 100) throw new ContentDownloaderException("This game has more than 100 DLC entries; metadata discovery is limited to 100.");
             var dlc = new List<object>();
-            foreach (var id in ids.OrderBy(x => x)) dlc.Add(await Info(id));
+            foreach (var id in ids) dlc.Add(await Info(id));
             Console.WriteLine("PLAYLITE_APPINFO " + System.Text.Json.JsonSerializer.Serialize(new { game = await Info(appId), dlc }));
         }
 
@@ -48,8 +48,15 @@ def apply(source):
         if marker not in text: raise RuntimeError('Worker metadata entry point changed.')
         path.write_text(text.replace(marker, BRANCH + marker))
     path = source / 'ContentDownloader.cs'; text = path.read_text()
+    if 'ExportPlayliteAppInfo' in text:
+        start=text.index('        public static async Task ExportPlayliteAppInfo(')
+        end=text.index('        internal static KeyValue GetSteam3AppSection(',start)
+        text=text[:start]+text[end:]
     if 'ExportPlayliteAppInfo' not in text:
         marker = '        internal static KeyValue GetSteam3AppSection('
         if marker not in text: raise RuntimeError('Worker metadata section changed.')
         text = text.replace(marker, METHOD + marker)
         path.write_text(text)
+
+    from preflight_patch import apply as preflight
+    preflight(source)

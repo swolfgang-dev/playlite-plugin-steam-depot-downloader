@@ -209,9 +209,17 @@ class DownloadDialog(QDialog):
             self.log.setMaximumHeight(180)
             self.log.document().setMaximumBlockCount(2000)
             self.depot_info=QLabel('');form.addRow(self.depot_info)
+            self.language = QComboBox();self.language.addItem('English','english')
+            self.architecture = QComboBox();self.architecture.addItem('64-bit','64');self.architecture.addItem('32-bit','32')
+            self.branch = QComboBox();self.branch.addItem('Default (public)','public')
+            form.addRow('Language',self.language);form.addRow('Architecture',self.architecture);form.addRow('Branch',self.branch)
+            for control in (self.language,self.architecture,self.branch):
+                control.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
+                control.currentIndexChanged.connect(self.update_dlc_list)
             self.advanced = QPushButton('Advanced'); self.advanced.setCheckable(True)
             def advanced(visible):
                 form.setRowVisible(self.provider,visible); form.setRowVisible(self.fetch,visible);form.setRowVisible(self.depot_info,visible)
+                for control in (self.language,self.architecture,self.branch):form.setRowVisible(control,visible)
             self.advanced.toggled.connect(advanced); advanced(False)
             self.details_button = QPushButton('Show details'); self.details_button.setCheckable(True)
             def details(visible):
@@ -486,7 +494,7 @@ class DownloadDialog(QDialog):
 
     def set_content_enabled(self, enabled):
         if self.authentication: return
-        for control in (self.appid,self.provider,self.depot,self.destination,self.dlc_list):
+        for control in (self.appid,self.provider,self.depot,self.destination,self.dlc_list,self.language,self.architecture,self.branch):
             control.setEnabled(enabled)
 
     def task(self, operation, completed, progress=False, on_error=None):
@@ -529,8 +537,8 @@ class DownloadDialog(QDialog):
         if not self.authentication:
             self.dlc_list.clear(); self.dlc_note.setText('Loading Steam content information…')
         def operation():
-            from .app_info import fetch_app_info
-            info = fetch_app_info(self.network, app, username)
+            from .app_info import fetch_app_info,resolve_shared
+            info = resolve_shared(fetch_app_info(self.network, app, username),lambda shared:fetch_app_info(self.network,shared,username))
             credential = self.moon.token() if source == 'Luie' else (HubcapKeyWallet().read() or {}).get('key','') if source == 'Hubcap' else ''
             rows=self.transport.fetch(source, app, credential)
             from .dlc_names import resolve_names
@@ -541,13 +549,27 @@ class DownloadDialog(QDialog):
             if source == 'Hubcap': self.network.hubcap_confirmed = True
             self.rows = rows; self.pack_app = app; self.content_info = info
             self.pack_source = source
+            from .app_info import depot_entries
+            language_values={'english'}
+            for entry in [info['game'],*info['dlc']]:
+                language_values.update(str(row.get('config',{}).get('language','')).lower() for row in depot_entries(entry).values())
+            self.language.blockSignals(True);self.language.clear()
+            for language in sorted(language_values-{''}):self.language.addItem(language.replace('_',' ').title(),language)
+            self.language.setCurrentIndex(self.language.findData('english'));self.language.blockSignals(False)
+            branches=(info['game'].get('depots') or {}).get('branches',{}) if isinstance(info['game'].get('depots'),dict) else {}
+            self.branch.blockSignals(True);self.branch.clear();self.branch.addItem('Default (public)','public')
+            if isinstance(branches,dict):
+                for name,settings in branches.items():
+                    if name!='public' and isinstance(settings,dict) and str(settings.get('pwdrequired','0'))!='1':self.branch.addItem(name,name)
+            self.branch.blockSignals(False)
             self.depot.blockSignals(True); self.depot.clear()
             from .app_info import content_depots, matches_platform
             advertised={os.strip() for row in content_depots(info).values() for os in str(row.get('config',{}).get('oslist','')).split(',') if os.strip()}
             for platform, label in (('linux','Linux'),('windows','Windows'),('macos','macOS')):
-                if (not advertised or platform in advertised) and any(matches_platform(row,platform) for row in content_depots(info).values()):
+                if (not advertised or platform in advertised) and any(not str(row.get('config',{}).get('oslist','')) or platform in str(row.get('config',{}).get('oslist','')).split(',') for row in content_depots(info).values()):
                     self.depot.addItem(label,platform)
             self.depot.blockSignals(False)
+            self.default_dlc_selection={entry['id'] for entry in info['dlc'] if entry.get('owned') is True}
             self.update_depot_details(); self.update_dlc_list()
             self.status.setText('')
             self.start_button.setEnabled(bool(rows) and self.depot.count()>0)
@@ -556,22 +578,34 @@ class DownloadDialog(QDialog):
 
     def update_dlc_list(self, *_):
         if self.authentication or not self.content_info: return
-        from .app_info import content_depots, matches_platform
+        from .app_info import content_depots, matches_platform, manifest_id
         selected = {self.dlc_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.dlc_list.count()) if self.dlc_list.item(i).checkState()==Qt.CheckState.Checked}
+        selected.update(getattr(self,'default_dlc_selection',set()))
+        self.default_dlc_selection=set()
         self.dlc_list.clear()
         platform = self.depot.currentData()
         for entry in self.content_info['dlc']:
             depots = content_depots(self.content_info,entry)
-            applicable = any(matches_platform(row,platform) for row in depots.values())
-            reason = 'Included in base-game files' if not depots else 'Unavailable for this platform' if not applicable else 'Manifest request failed' if entry.get('manifest_error') and entry.get('manifest_provider')==getattr(self,'pack_source',None) else ''
+            applicable = any(matches_platform(row,platform,self.language.currentData(),self.architecture.currentData()) for row in depots.values())
+            reason = 'Included in base-game files' if not depots else 'Unavailable for these content settings' if not applicable else 'Manifest request failed' if entry.get('manifest_error') and entry.get('manifest_provider')==getattr(self,'pack_source',None) else ''
             item=QListWidgetItem(entry['name'] or f'Unknown DLC ({entry["id"]})')
             item.setData(Qt.ItemDataRole.UserRole,entry['id'])
-            required={key for key,row in depots.items() if matches_platform(row,platform)}
+            required={key for key,row in depots.items() if matches_platform(row,platform,self.language.currentData(),self.architecture.currentData())}
             available={row.id for row in self.rows}
-            availability=entry.get('manifest_error','') if reason=='Manifest request failed' else reason or ('Required manifests are available. Steam/CDN access has not been tested.' if required<=available else 'Extra manifests are needed; the provider will be checked before queueing. Steam/CDN access has not been tested.')
+            manifests={row.id:row.manifest for row in self.rows}
+            try:expected={key:manifest_id(row,self.branch.currentData() or 'public') for key,row in depots.items() if key in required}
+            except ValueError:expected={};reason=reason or 'Protected branch unsupported'
+            if not reason and any(key in manifests and gid is not None and manifests[key]!=gid for key,gid in expected.items()):reason='Manifest version mismatch'
+            failures=self.content_info.get('_cdn_failures',{})
+            failed=[failures[key][1] for key in required if key in failures and expected.get(key)==failures[key][0]]
+            if not reason and failed:reason='CDN access check failed'
+            availability=failed[0] if reason=='CDN access check failed' else entry.get('manifest_error','') if reason=='Manifest request failed' else reason or ('Required manifests are available. Steam/CDN access has not been tested.' if required<=available else 'Extra manifests are needed; the provider will be checked before queueing. Steam/CDN access has not been tested.')
+            checks=self.content_info.get('_cdn_checks',{})
+            if not reason and required and all(key in checks and checks[key][1]=='OK' and (key not in manifests or checks[key][0]==manifests[key]) for key in required):
+                availability='Steam/CDN sample verified. This does not guarantee completion of the full download.'
             item.setToolTip(('Name could not be resolved from accessible metadata sources. ' if not entry['name'] else '')+availability+(' Refresh the manifest pack under Advanced to retry.' if reason=='Manifest request failed' else ''))
             if reason:item.setText(item.text()+' · '+reason)
-            if reason and reason!='Manifest request failed':
+            if reason in ('Included in base-game files','Unavailable for these content settings'):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
             else:
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -593,21 +627,34 @@ class DownloadDialog(QDialog):
             info=self.content_info; source=self.pack_source; platform=self.depot.currentData()
             selected={self.dlc_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.dlc_list.count()) if self.dlc_list.item(i).checkState()==Qt.CheckState.Checked}
             packs={self.pack_app:list(self.rows)}
+            language=self.language.currentData();architecture=self.architecture.currentData();branch=self.branch.currentData()
+            username=self.username.text().strip()
         except Exception as error:
             self.status.setText(str(error)); return
-        def operation():
+        def operation(progress):
             from .app_info import prepare_content
             credential=self.moon.token() if source=='Luie' else (HubcapKeyWallet().read() or {}).get('key','') if source=='Hubcap' else ''
-            return prepare_content(info,packs[self.pack_app],platform,selected,source,
-                                   lambda app:self.transport.fetch(source,app,credential))
-        def done(plan):
+            plan=prepare_content(info,packs[self.pack_app],platform,selected,source,
+                                   lambda app:self.transport.fetch(source,app,credential),language,architecture,branch)
+            from .preflight import check_plan,PreflightFailure
+            try:states=check_plan(self.network,plan,username,branch,progress)
+            except PreflightFailure as error:
+                info.setdefault('_cdn_failures',{})[error.depot]=(error.manifest,str(error))
+                raise
+            return plan,states
+        def done(result):
+            plan,states=result
+            self.preflight_states=states
+            for _,row,_ in plan:self.content_info.get('_cdn_failures',{}).pop(row.id,None)
+            self.content_info['_cdn_checks']={row.id:(row.manifest,state) for (_,row,_),state in zip(plan,states)}
+            self.update_dlc_list()
             self.content_plan=plan; self.content_index=0
             self.total_downloaded=0; self.total_uncompressed=0; self.batch_started_at=time.monotonic()
             window=self.parentWidget()
             if hasattr(window,'download_queue'):
                 from .queue_runner import QueueRunner
                 network=self.network
-                snapshot={'app':self.pack_app,'rows':list(self.rows),'plan':list(plan),'info':self.content_info,'username':self.username.text()}
+                snapshot={'app':self.pack_app,'rows':list(self.rows),'plan':list(plan),'info':self.content_info,'username':self.username.text(),'branch':branch}
                 try:
                     window.download_queue.enqueue(self.game_name or self.content_info['game']['name'],self.destination.text(),
                         lambda queue,entry:QueueRunner(network,window,queue,entry,snapshot))
@@ -621,7 +668,7 @@ class DownloadDialog(QDialog):
         def failed(message):
             self.progress_info.setText('Nothing added to queue. Manifest preparation failed.')
             self.update_dlc_list()
-        self.task(operation,done,on_error=failed)
+        self.task(operation,done,progress=True,on_error=failed)
 
     def download(self):
         if self.busy: return
@@ -680,6 +727,7 @@ class DownloadDialog(QDialog):
                 index = args.index('playlite-depot-worker:test')
                 args[index+1:] = ['-login-only', '-username', self.username.text().strip(), '-loginid', str(secrets.randbelow(2**32-1)+1)]
             args.append('-remember-password')
+            if not self.authentication:args+=['-branch',self.branch.currentData() or 'public']
             self.container = 'playlite-download-' + uuid.uuid4().hex
             args[1:1] = ['--name', self.container]
             # Output must remain writable by the desktop user after UID 65534 exits.
