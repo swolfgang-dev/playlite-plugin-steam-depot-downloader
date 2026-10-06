@@ -36,3 +36,10 @@ class SearchTests(unittest.TestCase):
         transport=Mock()
         transport.request.return_value=json.dumps({'items':[{'id':1,'name':'Game'},{'id':1,'name':'Game'},{'id':True,'name':'bad'},{'id':-1,'name':'bad'}]}).encode()
         self.assertEqual(GameSearch(transport).search('Game'),[{'id':1,'name':'Game'}])
+
+    def test_missing_library_art_falls_back_to_header(self):
+        transport=Mock()
+        transport.request.side_effect=[RuntimeError('Missing cover'),b'header']
+        self.assertEqual(GameSearch(transport).cover(123),b'header')
+        self.assertIn('header.jpg',transport.request.call_args.args[0])
+        self.assertEqual(transport.request.call_count,2)

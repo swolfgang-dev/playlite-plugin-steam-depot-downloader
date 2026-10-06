@@ -45,6 +45,8 @@ class DownloadDialog(QDialog):
         search_line = QHBoxLayout(); search_line.setSpacing(10)
         search_line.addWidget(self.appid); search_line.addWidget(search_button)
         form.addRow('Game / App ID', search_line); download_rows.append(search_line)
+        self.cover_placeholder=QPixmap(54,81)
+        self.cover_placeholder.fill(Qt.GlobalColor.transparent)
         self.search_results = QListWidget()
         self.search_results.setIconSize(QSize(54,81))
         self.search_results.setMaximumHeight(230)
@@ -262,6 +264,7 @@ class DownloadDialog(QDialog):
             self.search_results.clear(); self.search_items = {}
             for row in result:
                 item = QListWidgetItem(f"{row['name']}\nApp ID: {row['id']}")
+                item.setIcon(QIcon(self.cover_placeholder))
                 item.setData(Qt.ItemDataRole.UserRole, row)
                 item.setSizeHint(QSize(0, 90))
                 self.search_results.addItem(item); self.search_items[row['id']] = item
