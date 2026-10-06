@@ -57,7 +57,7 @@ class ManifestResolver:
                 message=f'No provider supplied the required Steam manifest for depot {key} ({title}). {detail}. Nothing was queued.'
                 entry['manifest_error']=message;entry['manifest_provider']=self.providers[0]
                 self.progress(detail)
-                raise ValueError(f'Missing matching manifest for depot {key}. Checked {", ".join(self.providers)}. Nothing was queued; see details for provider errors.')
+                raise ValueError(f'Missing matching manifest for depot {key}. Checked {", ".join(self.providers)}. Nothing was queued; see Downloader log for provider errors.')
             resolved.append(found)
             entry.pop('manifest_error',None);entry.pop('manifest_provider',None)
         # Only exact matching rows are merged, so a stale pack cannot replace them.

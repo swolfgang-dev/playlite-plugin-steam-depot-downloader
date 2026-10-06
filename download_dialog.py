@@ -8,7 +8,7 @@ from pathlib import Path
 from PyQt6.QtCore import QProcess, QThreadPool, QSettings, QTimer, Qt, QSize, QUrl
 from PyQt6.QtGui import QIcon, QPixmap, QDesktopServices
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,
-                            QLabel, QPlainTextEdit, QFileDialog, QHBoxLayout, QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QProgressBar, QSizePolicy, QMenu)
+                            QLabel, QPlainTextEdit, QFileDialog, QHBoxLayout, QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QProgressBar, QSizePolicy, QMenu, QApplication)
 from .moon import Moon
 from .credentials import MoonSessionWallet, SteamSessionWallet, HubcapKeyWallet
 from .providers import SOURCES, Transport, prepare_depot
@@ -204,14 +204,26 @@ class DownloadDialog(QDialog):
             self.depot.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
             self.depot.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
             self.start_button.setText('Add to queue' if hasattr(parent,'download_queue') else 'Download')
-            self.progress_bar = QProgressBar(); self.progress_bar.setRange(0,1000)
+            self.progress_bar = QProgressBar(self); self.progress_bar.hide(); self.progress_bar.setRange(0,1000)
             self.progress_bar.setValue(0); self.progress_bar.setFormat('%p%')
             self.progress_info = QLabel('Ready to choose a game')
-            form.insertRow(form.rowCount()-1,self.progress_bar)
             form.insertRow(form.rowCount()-1,self.progress_info)
-            form.setRowVisible(self.log,False)
-            self.log.setMaximumHeight(180)
+            # Move the live log into its own window without deleting the widget.
+            form.takeRow(self.log)
+            self.log_window = QDialog(self)
+            self.log_window.setWindowTitle('Downloader log — Playlite')
+            self.log_window.resize(800,500)
+            log_layout = QVBoxLayout(self.log_window)
+            self.log.setParent(self.log_window)
+            self.log.setPlaceholderText('Manifest lookups, connection checks and download output appear here.')
             self.log.document().setMaximumBlockCount(2000)
+            log_layout.addWidget(self.log)
+            log_footer = QHBoxLayout(); log_footer.setSpacing(10)
+            copy_log = QPushButton('Copy log')
+            copy_log.clicked.connect(lambda: QApplication.clipboard().setText(self.log.toPlainText()))
+            close_log = QPushButton('Close'); close_log.clicked.connect(self.log_window.hide)
+            log_footer.addWidget(copy_log); log_footer.addStretch(); log_footer.addWidget(close_log)
+            log_layout.addLayout(log_footer)
             self.depot_info=QLabel('');form.addRow(self.depot_info)
             self.language = QComboBox();self.language.addItem('English','english')
             self.architecture = QComboBox();self.architecture.addItem('64-bit','64');self.architecture.addItem('32-bit','32')
@@ -225,11 +237,10 @@ class DownloadDialog(QDialog):
                 form.setRowVisible(self.provider,visible); form.setRowVisible(self.fetch,visible);form.setRowVisible(self.depot_info,visible)
                 for control in (self.language,self.architecture,self.branch):form.setRowVisible(control,visible)
             self.advanced.toggled.connect(advanced); advanced(False)
-            self.details_button = QPushButton('Show details'); self.details_button.setCheckable(True)
-            def details(visible):
-                form.setRowVisible(self.log,visible)
-                self.details_button.setText('Hide details' if visible else 'Show details')
-            self.details_button.toggled.connect(details)
+            self.details_button = QPushButton('Downloader log…')
+            def show_log():
+                self.log_window.show(); self.log_window.raise_(); self.log_window.activateWindow()
+            self.details_button.clicked.connect(show_log)
             self.open_folder = QPushButton('Open folder'); self.open_folder.setEnabled(False)
             self.open_folder.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(self.destination.text())))
             self.add_library = QPushButton('Add to Playlite'); self.add_library.setEnabled(False)
@@ -528,6 +539,7 @@ class DownloadDialog(QDialog):
             else:
                 self.status.setText(message)
                 if on_error:on_error(message)
+            if not self.authentication:self.log.appendPlainText(self.status.text())
         job.signals.finished.connect(done)
         job.signals.progress.connect(self.status.setText)
         if progress and not self.authentication:job.signals.progress.connect(self.log.appendPlainText)
@@ -765,7 +777,8 @@ class DownloadDialog(QDialog):
         QSettings('Playlite', 'SteamDownloader').setValue('steam_account', self.username.text().strip())
         self.busy = True; self.set_content_enabled(False); self.fetch.setEnabled(False); self.start_button.setEnabled(False)
         self.cancel.setText('Cancel login' if self.authentication else 'Cancel download')
-        self.output = ''; self.auth_needed = False; self.log.clear()
+        self.output = ''; self.auth_needed = False
+        if self.authentication:self.log.clear()
         self.started_at=time.monotonic()
         if not self.authentication:
             self.progress_bar.setFormat(f'Part {self.content_index+1}/{len(self.content_plan)} · %p%' if len(self.content_plan)>1 else '%p%')
