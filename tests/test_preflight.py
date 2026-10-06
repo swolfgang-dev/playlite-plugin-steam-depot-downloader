@@ -39,3 +39,9 @@ class PreflightTests(unittest.TestCase):
         with patch('downloader.preflight.worker_args') as worker:
             with self.assertRaises(ValueError):check_plan(Mock(),[(10,self.row,'Game')],'account')
             worker.assert_not_called()
+
+    def test_missing_manifest_request_code_has_specific_safe_error(self):
+        self.row=Depot(11,1,b'', 'ab'*32)
+        with self.assertRaisesRegex(RuntimeError,'Steam did not authorize fetching this binary manifest') as error:
+            self.run_check('No manifest request code was returned\nsecret-session-data',1)
+        self.assertNotIn('secret-session-data',str(error.exception))

@@ -44,7 +44,10 @@ def check_plan(network,plan,username,branch='public',progress=lambda message:Non
                 prefix=f'PLAYLITE_PREFLIGHT {row.id} {row.manifest} '
                 states=[line[len(prefix):] for line in text.splitlines() if line.startswith(prefix)]
                 if code or len(states)!=1 or states[0] not in ('OK','EMPTY'):
-                    raise PreflightFailure(row.id,row.manifest,f'Steam/CDN check failed for depot {row.id} ({title}). Check Steam authentication, VPN and manifest access. Update the native worker if it does not support CDN checks. Nothing was queued.')
+                    reason='Steam/CDN access could not be verified. Check Steam authentication, VPN and manifest access.'
+                    if not row.data and 'No manifest request code was returned' in text:
+                        reason='Steam did not authorize fetching this binary manifest. Provider metadata alone is insufficient; retry with a matching binary manifest from another provider.'
+                    raise PreflightFailure(row.id,row.manifest,f'Steam/CDN check failed for depot {row.id} ({title}). {reason} Nothing was queued.')
                 results.append(states[0])
             finally:subprocess.run(['docker','rm','-f',name],capture_output=True,timeout=15)
         wallet.save({'data':base64.b64encode(cache.read_bytes()).decode()})
