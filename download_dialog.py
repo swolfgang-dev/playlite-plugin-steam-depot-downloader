@@ -6,8 +6,8 @@ import time
 import re
 import copy
 from pathlib import Path
-from PyQt6.QtCore import QProcess, QThreadPool, QSettings, QTimer, Qt, QSize, QUrl
-from PyQt6.QtGui import QIcon, QPixmap, QDesktopServices
+from PyQt6.QtCore import QProcess, QThreadPool, QSettings, QTimer, Qt, QSize
+from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,
                             QLabel, QPlainTextEdit, QFileDialog, QHBoxLayout, QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QProgressBar, QSizePolicy, QMenu, QApplication)
 from .moon import Moon
@@ -239,10 +239,6 @@ class DownloadDialog(QDialog):
             self.advanced = QPushButton('Advanced'); self.advanced.hide()
             self.details_button = QPushButton('Copy log')
             self.details_button.clicked.connect(lambda: QApplication.clipboard().setText(self.log.toPlainText()))
-            self.open_folder = QPushButton('Open folder'); self.open_folder.setEnabled(False)
-            self.open_folder.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(self.destination.text())))
-            self.add_library = QPushButton('Add to Playlite'); self.add_library.setEnabled(False)
-            self.add_library.clicked.connect(self.add_to_library)
             form.setRowVisible(self.start_button,False); form.setRowVisible(self.cancel,False)
             self.start_button.setParent(self);self.cancel.setParent(self)
             footer = QHBoxLayout(); footer.setSpacing(10)
@@ -251,12 +247,16 @@ class DownloadDialog(QDialog):
             self.authenticate.clicked.connect(lambda:self.open_authentication('Steam'))
             self.auth_check=QPushButton('Check authentication')
             self.auth_check.clicked.connect(self.check_environment_authentication)
-            footer.addWidget(self.details_button);footer.addWidget(self.authenticate);footer.addWidget(self.auth_check);footer.addStretch()
-            footer.addWidget(self.start_button);footer.addWidget(self.cancel)
+            for button in (self.details_button,self.authenticate,self.auth_check):
+                footer.addWidget(button,0,Qt.AlignmentFlag.AlignBottom)
+            footer.addStretch()
+            queue_action=QVBoxLayout();queue_action.setSpacing(6)
+            self.queue_confirmation=QLabel('')
+            self.queue_confirmation.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.queue_confirmation.setMinimumHeight(self.queue_confirmation.fontMetrics().lineSpacing())
+            queue_action.addWidget(self.queue_confirmation);queue_action.addWidget(self.start_button)
+            footer.addLayout(queue_action);footer.addWidget(self.cancel,0,Qt.AlignmentFlag.AlignBottom)
             form.addRow(footer);self.start_button.show();self.cancel.show()
-            completed = QHBoxLayout();completed.setSpacing(10);completed.addStretch()
-            completed.addWidget(self.open_folder);completed.addWidget(self.add_library)
-            form.addRow(completed)
             self.status.setText('')
             # Keep room for a wrapped status even while the message is empty.
             self.status.setMinimumHeight(self.status.fontMetrics().lineSpacing()*2)
@@ -315,6 +315,7 @@ class DownloadDialog(QDialog):
         return self.appid.text().strip()
 
     def queue_search(self, query):
+        if hasattr(self,'queue_confirmation'):self.queue_confirmation.clear()
         self.search_generation += 1
         self.search_timer.stop()
         self.search_results.clear()
@@ -510,7 +511,9 @@ class DownloadDialog(QDialog):
         parent=self.parentWidget()
         if not parent or not hasattr(parent,'data'):
             self.status.setText('Open this downloader from the Playlite menu to add a game.');return
-        executable,_=QFileDialog.getOpenFileName(self,'Choose the game executable',self.destination.text())
+        from playlite.lifecycle import choose_file
+        executable,_=choose_file(self,'Choose the game executable',self.destination.text(),
+                                'Game executables (*.exe *.sh *.AppImage);;All files (*)')
         if not executable:return
         from playlite.add_game import AddGameEditor
         from playlite.app import save_game
@@ -537,8 +540,6 @@ class DownloadDialog(QDialog):
             for plugin in dialog.generic_plugins:plugin.after_game_added(parent,dialog.result_game,dialog)
             for cache in dialog.download_caches:cache.cleanup()
             self.status.setText('Game added to Playlite.')
-            self.add_library.setText('Added')
-            self.add_library.setEnabled(False)
             return dialog.result_game['Id']
 
     def connect_vpn(self,automatic=False):
@@ -784,7 +785,7 @@ class DownloadDialog(QDialog):
                 self.owns_connection=False
                 self.network.download_queue=window.download_queue
                 self.status.setText('Added to Downloads. You can choose another game or close this window.')
-                window.downloads_panel.set_open(True)
+                self.queue_confirmation.setText('Added to Queue')
             else:self.download()
         def failed(message):
             self.progress_info.setText('Nothing added to queue. Manifest preparation failed.')
@@ -820,8 +821,8 @@ class DownloadDialog(QDialog):
             entry.steam_appid=snapshot['app']
             self.owns_connection=False
             self.status.setText('Added '+platform.title()+' download to Downloads.')
+            self.queue_confirmation.setText('Added to Queue')
             self.log.appendPlainText(f'Queued {self.game_name} · App {self.pack_app} · {platform.title()} · {self.language.currentData()} · Destination: {destination}')
-            window.downloads_panel.set_open(True)
             self.steam_queue_entry=entry
             if not getattr(self,'steam_queue_log_connected',False):
                 window.download_queue.changed.connect(self.sync_steam_queue_log)
@@ -839,8 +840,6 @@ class DownloadDialog(QDialog):
         if message!=getattr(self,'steam_queue_last_log',''):
             self.log.appendPlainText(message);self.steam_queue_last_log=message
             self.progress_info.setText(message)
-        if entry.state=='Complete' and self.destination.text()==entry.destination:
-            self.open_folder.setEnabled(True);self.add_library.setEnabled(True)
 
     def download(self):
         if self.busy: return
@@ -922,7 +921,6 @@ class DownloadDialog(QDialog):
         if not self.authentication:
             self.progress_bar.setFormat(f'Part {self.content_index+1}/{len(self.content_plan)} · %p%' if len(self.content_plan)>1 else '%p%')
             self.progress_bar.setRange(0,0);self.progress_info.setText('Connecting to Steam…')
-            self.open_folder.setEnabled(False);self.add_library.setEnabled(False)
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.process.readyReadStandardOutput.connect(self.read_output)
@@ -954,7 +952,7 @@ class DownloadDialog(QDialog):
                 percent=100*downloaded/total if total else 0
                 self.progress_bar.setRange(0,1000);self.progress_bar.setValue(min(1000,int(percent*10)))
                 remaining=int(elapsed*(total-downloaded)/downloaded) if downloaded else 0
-                self.progress_info.setText(f'{downloaded/1000000:.1f} / {total/1000000:.1f} MB · {transferred/elapsed/1000000:.1f} MB/s average · About {max(0,remaining)//60}m {max(0,remaining)%60}s remaining')
+                self.progress_info.setText(f'{downloaded/1000000:.1f} / {total/1000000:.1f} MB · {transferred/elapsed*8/1000000:.1f} Mbps average · About {max(0,remaining)//60}m {max(0,remaining)%60}s remaining')
         code_prompt = re.search(r'please enter (?:your |the )?(?:2 factor )?(?:auth(?:entication)? )?code', prompt_text, re.IGNORECASE)
         if self.authentication and text:
             if code_prompt:
@@ -1053,12 +1051,12 @@ class DownloadDialog(QDialog):
             self.status.setText('Steam requires a new login. Open plugin settings → Steam login and sign in again. Incomplete files were retained.')
 
     def complete_download(self):
+        self.download_complete=True
         self.progress_bar.setFormat('%p%')
         self.progress_bar.setRange(0,1000);self.progress_bar.setValue(1000)
         elapsed=max(.1,time.monotonic()-(self.batch_started_at or self.started_at))
-        self.progress_info.setText(f'{self.total_uncompressed/1000000:.1f} MB · {self.total_downloaded/elapsed/1000000:.1f} MB/s average' if self.total_uncompressed else 'Files validated')
+        self.progress_info.setText(f'{self.total_uncompressed/1000000:.1f} MB · {self.total_downloaded/elapsed*8/1000000:.1f} Mbps average' if self.total_uncompressed else 'Files validated')
         self.status.setText('Download complete. Files are ready in your chosen folder.')
-        self.open_folder.setEnabled(True);self.add_library.setEnabled(True)
 
     def forget_steam(self):
         if self.busy: return

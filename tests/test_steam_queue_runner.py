@@ -16,6 +16,25 @@ def metadata():
 
 
 class SteamQueueTests(unittest.TestCase):
+    def test_install_copy_reports_chunk_progress_and_verification(self):
+        import itertools
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'source';source.mkdir()
+            (source/'game.bin').write_bytes(b'x'*(3*1024*1024))
+            updates=[]
+            with patch('downloader.steam_queue_runner.time.monotonic',side_effect=itertools.count(1)):
+                export_install(source,root/'installed',progress=lambda message,amount:updates.append((message,amount)))
+            self.assertEqual(updates[0][1],0)
+            self.assertEqual(updates[-1][1],100)
+            self.assertTrue(any('Copying files ·' in message and 0<amount<100 for message,amount in updates))
+            self.assertTrue(any('Verifying copied files' in message for message,_ in updates))
+            for message,amount in updates[1:-1]:
+                self.assertIn('Mbps',message)
+                self.assertIn('min remaining',message)
+
+            self.assertEqual([amount for _,amount in updates],sorted(amount for _,amount in updates))
+            self.assertEqual((root/'installed/game.bin').stat().st_size,3*1024*1024)
+
     def test_paused_recovery_waits_for_stall_and_runs_only_once(self):
         recovery=PausedRecovery()
         state={'flags':1538,'downloaded':100}
@@ -159,7 +178,8 @@ class SteamQueueTests(unittest.TestCase):
             self.assertEqual(sum(command=='retail_selection' for command,_ in calls),2)
             self.assertIn(('install',{'platform':'windows','language':'english','dlc':[]}),calls)
             self.assertEqual(sum(command=='download_status' for command,_ in calls),2)
-            export.assert_called_once_with(Path('/private/library/steamapps/common/Game'),row.destination)
+            from unittest.mock import ANY
+            export.assert_called_once_with(Path('/private/library/steamapps/common/Game'),row.destination,progress=ANY,cancelled=ANY)
             self.assertIn(('finish_export',{}),calls)
             runner.dispose()
         window.close()

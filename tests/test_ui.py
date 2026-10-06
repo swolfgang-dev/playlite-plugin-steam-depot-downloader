@@ -298,7 +298,7 @@ class CleanDownloaderTests(unittest.TestCase):
         dialog.read_output()
         self.assertEqual(dialog.progress_bar.value(),500)
         self.assertIn('5.0 / 10.0 MB',dialog.progress_info.text())
-        self.assertIn('MB/s',dialog.progress_info.text())
+        self.assertIn('3.2 Mbps average',dialog.progress_info.text())
         self.assertFalse(dialog.log.isVisible())
         dialog.process=None;dialog.close()
 

@@ -88,7 +88,7 @@ def rename_without_overwrite(source,target):
         raise ValueError('Unsupported file type in downloaded content.')
 
 
-def copy_file_exclusive(source,target):
+def copy_file_exclusive(source,target,progress=None):
     """Verified copy for filesystems without hard links; retain source on failure."""
     created=False
     try:
@@ -99,13 +99,16 @@ def copy_file_exclusive(source,target):
             with os.fdopen(descriptor,'wb') as writer:
                 while data:=reader.read(1024*1024):
                     digest.update(data);writer.write(data)
+                    if progress:progress(len(data),'copy')
                 writer.flush();os.fsync(writer.fileno())
             after=os.fstat(reader.fileno())
             if (before.st_ino,before.st_size,before.st_mtime_ns)!=(after.st_ino,after.st_size,after.st_mtime_ns):
                 raise OSError('Source file changed while copying.')
             copied=hashlib.sha256()
             with target.open('rb') as check:
-                while data:=check.read(1024*1024):copied.update(data)
+                while data:=check.read(1024*1024):
+                    copied.update(data)
+                    if progress:progress(len(data),'verify')
             if copied.digest()!=digest.digest():raise OSError('Copied file failed verification.')
             shutil.copystat(source,target,follow_symlinks=False)
     except Exception:

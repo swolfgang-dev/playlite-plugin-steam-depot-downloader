@@ -155,13 +155,11 @@ class ChecklistTests(unittest.TestCase):
             dialog.finished(0)
             dialog.download.assert_called_once()
             self.assertFalse((Path(directory)/'base.txt').exists())
-            self.assertFalse(dialog.open_folder.isEnabled())
             (dialog.download_staging/'dlc.txt').write_text('dlc')
             dialog.finished(0)
             self.assertTrue((Path(directory)/'base.txt').exists())
             self.assertTrue((Path(directory)/'dlc.txt').exists())
             self.assertFalse(dialog.download_staging.exists())
-            self.assertTrue(dialog.open_folder.isEnabled())
         dialog.process=None;dialog.close()
 
     def test_failed_content_stops_queue_and_retains_staging(self):
@@ -176,7 +174,6 @@ class ChecklistTests(unittest.TestCase):
             dialog.finished(1)
             dialog.download.assert_not_called()
             self.assertTrue((dialog.download_staging/'partial.txt').exists())
-            self.assertFalse(dialog.open_folder.isEnabled())
         dialog.close()
 
 class MetadataOutputTests(unittest.TestCase):

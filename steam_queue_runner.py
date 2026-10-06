@@ -83,19 +83,41 @@ def download_failure(state,previous_events=()):
     return None
 
 
-def export_install(source,destination):
+def export_install(source,destination,progress=None,cancelled=None):
     from .download_flow import prepare_destination,copy_file_exclusive,finalize_download
     source=Path(source).resolve()
     if not source.is_dir():raise ValueError('Steam installation files are unavailable.')
+    total=0
     for path in source.rglob('*'):
         if path.is_symlink() and (Path(path.readlink()).is_absolute() or not path.resolve().is_relative_to(source)):
             raise ValueError('Steam content contains a link outside the game folder.')
+        if path.is_file() and not path.is_symlink():total+=path.stat().st_size
     destination,staging=prepare_destination(destination)
+    counts={'copy':0,'verify':0};last_update=[0.]
+    elapsed={'copy':0.,'verify':0.};last_sample=[time.monotonic()]
+
+    def update(amount,phase):
+        if cancelled and cancelled():raise RuntimeError('Installation copy stopped · partial files retained')
+        counts[phase]+=amount
+        now=time.monotonic()
+        elapsed[phase]+=max(0.,now-last_sample[0]);last_sample[0]=now
+        speed=counts[phase]/max(.001,elapsed[phase])
+        rates={key:counts[key]/elapsed[key] if elapsed[key]>0 and counts[key]>0 else speed for key in counts}
+        remaining=sum(max(0,total-counts[key])/max(1.,rates[key]) for key in counts)
+        if progress and now-last_update[0]>=.2:
+            last_update[0]=now
+            progress(('Copying files' if phase=='copy' else 'Verifying copied files')
+                     +f' · {counts[phase]/1048576:.1f} / {total/1048576:.1f} MiB'
+                     +f' · ~{speed*8/1000000:.1f} Mbps · ~{remaining/60:.1f} min remaining',
+                     min(99,sum(counts.values())/max(1,total*2)*100))
+    if progress:progress('Copying files to install location',0)
     def copy_file(source,target):
-        copy_file_exclusive(Path(source),Path(target))
+        copy_file_exclusive(Path(source),Path(target),update)
         return target
     shutil.copytree(source,staging,dirs_exist_ok=True,symlinks=True,copy_function=copy_file)
+    if cancelled and cancelled():raise RuntimeError('Installation copy stopped · partial files retained')
     finalize_download(destination,staging)
+    if progress:progress('Install files copied and verified',100)
 
 
 class SteamQueueRunner(QObject):
@@ -252,7 +274,7 @@ class SteamQueueRunner(QObject):
                         message+=f' · {downloaded/total*100:.1f}% · {downloaded/1048576:.1f} / {total/1048576:.1f} MiB'
                         if len(samples)>1 and now>samples[0][0] and downloaded>samples[0][1]:
                             speed=(downloaded-samples[0][1])/(now-samples[0][0])
-                            message+=f' · ~{speed/1048576:.2f} MiB/s · ~{max(0,total-downloaded)/speed/60:.1f} min remaining'
+                            message+=f' · ~{speed*8/1000000:.1f} Mbps · ~{max(0,total-downloaded)/speed/60:.1f} min remaining'
                     elif not state.get('flags'):
                         message='Waiting for Steam to register the installation · check its desktop for a confirmation'
                         if time.monotonic()>registered_deadline:raise RuntimeError('Steam did not register the installation within three minutes. Open its desktop and check for a confirmation or error.')
@@ -268,13 +290,13 @@ class SteamQueueRunner(QObject):
                             message+=f' · {state.get("export_copied",0)/1048576:.1f} / {state["export_total"]/1048576:.1f} MiB copied'
                         amount=99
                     progress(message,amount,events);self.cancelled.wait(2)
-                progress('Steam verification complete · copying game files to '+self.entry.destination,99)
+                progress('Steam verification complete · copying game files to '+self.entry.destination,0)
                 source=(self.runtime.root/'library'/state['directory']).resolve()
                 if not source.is_relative_to((self.runtime.root/'library/steamapps/common').resolve()):
                     raise ValueError('Invalid Steam installation path.')
-                export_install(source,self.entry.destination)
+                export_install(source,self.entry.destination,progress=progress,cancelled=self.cancelled.is_set)
                 result.append(True)
-                progress('Export verified · removing the private Steam game copy',99)
+                progress('Export verified · removing the private Steam game copy',100)
                 try:
                     self.runtime.request('finish_export',app)
                 except Exception as error:

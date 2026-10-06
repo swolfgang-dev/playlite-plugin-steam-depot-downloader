@@ -18,7 +18,7 @@ class QueueRunner(DownloadDialog):
         if self.branch.findData(branch)<0:self.branch.addItem(branch,branch)
         self.branch.setCurrentIndex(self.branch.findData(branch))
         self.content_index=0;self.batch_started_at=time.monotonic()
-        self.connecting=False;self.done=False
+        self.connecting=False;self.done=False;self.download_complete=False
 
     def start(self):
         from .plugin import Job
@@ -49,7 +49,7 @@ class QueueRunner(DownloadDialog):
 
     def finished(self,code,*args):
         super().finished(1 if self.entry.cancelled else code,*args)
-        if not self.busy:self.finish_queue(self.open_folder.isEnabled(),self.status.text())
+        if not self.busy:self.finish_queue(self.download_complete,self.status.text())
 
     def finish_queue(self,success,status):
         if self.done:return
