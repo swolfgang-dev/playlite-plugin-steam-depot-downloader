@@ -14,3 +14,7 @@ if marker not in source:
     source=source[:offset]+source[offset:].replace('\nreturn {','\nlocal lifecycle = {',1)
     source+='\n'+marker+'\n'+Path('/opt/moon_bridge.lua').read_text()
     temporary=main.with_suffix('.playlite-tmp');temporary.write_text(source);temporary.replace(main)
+else:
+    # Upgrade the narrow interface in an existing saved Steam installation.
+    source=source[:source.index(marker)]+marker+'\n'+Path('/opt/moon_bridge.lua').read_text()
+    temporary=main.with_suffix('.playlite-tmp');temporary.write_text(source);temporary.replace(main)

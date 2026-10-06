@@ -27,6 +27,24 @@ class LifecycleTests(unittest.TestCase):
         app.processEvents()
         self.assertIsNone(self.network._disconnect_job)
 
+    def test_game_launch_releases_idle_environment_despite_session_preferences(self):
+        self.preferences.return_value=(True,True)
+        disconnect_when_idle(self.network,release_session=True)
+        self.network.cancel.assert_called_once()
+        self.network.disconnect.assert_called_once()
+
+    def test_game_launch_preserves_active_and_queued_downloads(self):
+        self.preferences.return_value=(True,True)
+        self.network.download_queue=Queue(['Downloading','Queued'])
+        disconnect_when_idle(self.network,release_session=True)
+        self.network.cancel.assert_not_called()
+        self.network.disconnect.assert_not_called()
+
+    def test_game_launch_preserves_environment_for_open_windows(self):
+        with patch('downloader.vpn_lifecycle.has_open_windows',return_value=True):
+            disconnect_when_idle(self.network,release_session=True)
+        self.network.disconnect.assert_not_called()
+
     def test_idle_close_disconnects_even_without_connection_ownership(self):
         disconnect_when_idle(self.network)
         self.network.disconnect.assert_called_once()

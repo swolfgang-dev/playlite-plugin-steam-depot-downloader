@@ -13,6 +13,10 @@ Installation opens the isolated Steam setup window. Steam setup requires an x86-
 
 Progress appears in the downloader log and Downloads panel. Downloads support pause, cancel and retry, and history remains across sessions until cleared. Successfully exported game files remain in your selected destination; the private source copy is removed after export verification. Host Steam is not used.
 
+Opening Settings checks VPN and Steam status without starting either service. **Connect** controls only the VPN. Steam’s main action changes between **Set up Steam**, **Start Steam**, **Open desktop**, and **Retry Steam**. The saved **Connect VPN and start Steam when opening the downloader** preference controls automatic startup, which connects the VPN first. A Steam startup failure keeps the VPN connected. Setup, stop, and delete actions are blocked while downloads are active or queued.
+
+Use **Delete isolated Steam…** to remove the owned environment while keeping the plugin, exported games, and NordVPN credentials. Private Steam data and logins are deleted only if you select that option.
+
 ## Remove
 
 Use **Settings → Plugins → Installed → Delete selected**. Steam Downloader offers optional removal of its owned Steam environment and private data/logins. Exported game folders, host Steam, Docker, and shared dependencies are retained. Resources created before ownership tracking are preserved.

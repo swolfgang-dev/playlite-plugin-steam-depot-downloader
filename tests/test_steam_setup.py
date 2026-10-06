@@ -8,6 +8,39 @@ from downloader.steam_setup import provision,image_revision
 from downloader.steam_catalog import fetch_catalog
 
 class SetupTests(unittest.TestCase):
+    def test_downloader_respects_disabled_automatic_start(self):
+        from PyQt6.QtWidgets import QApplication
+        from downloader.download_dialog import DownloadDialog
+        app=QApplication.instance() or QApplication([])
+        dialog=DownloadDialog(Mock())
+        with patch('downloader.download_dialog.QSettings') as settings,patch.object(dialog,'connect_vpn') as connect,patch.object(dialog,'refresh_steam_status'):
+            settings.return_value.value.return_value=False
+            dialog.show();app.processEvents()
+            connect.assert_not_called()
+        dialog.hide();dialog.deleteLater()
+
+    def test_status_check_never_starts_existing_steam(self):
+        from downloader.steam_runtime import installation_status
+        network=Mock();network.container='vpn'
+        with patch('downloader.steam_runtime.subprocess.run',return_value=Mock(returncode=0)),patch('downloader.steam_runtime.SteamRuntime') as runtime:
+            runtime.return_value.request.return_value={'steam_ready':True,'steam_running':False}
+            self.assertEqual(installation_status(network),'stopped')
+            runtime.return_value.start.assert_not_called()
+            runtime.return_value.request.assert_called_once_with('status')
+
+    def test_state_controls_block_deletion_during_downloads(self):
+        from downloader.plugin import Plugin
+        from PyQt6.QtWidgets import QApplication
+        app=QApplication.instance() or QApplication([])
+        plugin=Plugin();widget=plugin.create_settings()
+        widget.steam_state='running'
+        with patch('downloader.vpn_lifecycle.has_downloads',return_value=True):
+            plugin.update_steam_controls(widget)
+            self.assertFalse(widget.delete_steam_button.isEnabled())
+            self.assertFalse(widget.stop_steam_button.isEnabled())
+            self.assertIn('downloads',widget.steam_hint.text())
+        widget.deleteLater()
+
     def test_fresh_setup_waits_for_bootstrap_installs_moon_then_restarts(self):
         runtime=Mock();runtime.network.container=None
         with patch('downloader.steam_setup.ensure_image') as image,patch('downloader.steam_setup.wait_for',side_effect=[{'moon_installed':False},{'steam_ready':True},{'moon_installing':False,'moon_installed':True,'moon_install_exit':0}]):
@@ -117,7 +150,33 @@ class SetupTests(unittest.TestCase):
         with patch('downloader.steam_runtime.subprocess.run',return_value=Mock(returncode=0)),patch('downloader.steam_runtime.SteamRuntime') as runtime:
             start_with_vpn(network)
         runtime.return_value.start.assert_called_once()
-        runtime.return_value.request.assert_called_once_with('start')
+        self.assertEqual([call.args[0] for call in runtime.return_value.request.call_args_list],['status','start'])
+
+    def test_auto_start_does_not_create_a_missing_steam_install(self):
+        from downloader.steam_runtime import start_with_vpn
+        network=Mock();network.container='vpn'
+        with patch('downloader.steam_runtime.subprocess.run',side_effect=[Mock(returncode=0),Mock(returncode=1)]),patch('downloader.steam_runtime.SteamRuntime') as runtime:
+            self.assertIn('not installed',start_with_vpn(network))
+            runtime.return_value.start.assert_not_called()
+
+    def test_auto_start_does_not_wait_for_unfinished_steam_setup(self):
+        from downloader.steam_runtime import start_with_vpn
+        network=Mock();network.container='vpn'
+        with patch('downloader.steam_runtime.subprocess.run',return_value=Mock(returncode=0)),patch('downloader.steam_runtime.SteamRuntime') as runtime:
+            runtime.return_value.request.return_value={'steam_ready':False}
+            self.assertIn('setup is incomplete',start_with_vpn(network))
+            runtime.return_value.request.assert_called_once_with('status')
+
+    def test_manual_vpn_operation_does_not_start_steam(self):
+        from downloader.plugin import Plugin
+        plugin=Plugin();plugin.network=Mock(container='vpn')
+        widget=Mock(buttons=[Mock()],settings_closed=False)
+        pool=Mock();pool.globalInstance.return_value.start.side_effect=lambda job:job.run()
+        with patch('downloader.plugin.QThreadPool',pool),patch('downloader.steam_runtime.start_with_vpn') as start:
+            plugin.start(widget,lambda progress:'VPN connected')
+            start.assert_not_called()
+            plugin.start(widget,lambda progress:'VPN connected',start_steam=True)
+            start.assert_called_once()
 
     def test_vpn_open_does_not_provision_an_uninstalled_image(self):
         from downloader.steam_runtime import start_with_vpn

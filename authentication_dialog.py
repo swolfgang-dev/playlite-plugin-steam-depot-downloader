@@ -19,6 +19,11 @@ class CredentialDialog(QDialog):
         self.secret = QLineEdit()
         self.secret.setEchoMode(QLineEdit.EchoMode.Password)
         if provider == 'NordVPN':
+            try:
+                username,password=Wallet().read()
+                self.username.setText(username)
+                self.secret.setText(password)
+            except (ValueError,RuntimeError):pass
             form.addRow('Service username', self.username)
             form.addRow('Service password', self.secret)
             info = QLabel('<a href="https://support.nordvpn.com/hc/en-us/articles/19685514639633">Find NordVPN service credentials</a>. Use service credentials, rather than your account password.')
@@ -27,6 +32,8 @@ class CredentialDialog(QDialog):
             form.addRow('Login code', self.secret)
             info = QLabel('<a href="https://discord.gg/luatools">Open LuaTools Discord</a>. Run /login and paste the six-character code. Connect NordVPN first.')
         else:
+            try:self.secret.setText((HubcapKeyWallet().read() or {}).get('key',''))
+            except (ValueError,RuntimeError):pass
             form.addRow('API key', self.secret)
             info = QLabel('Your API key is saved in KWallet. Its acceptance is confirmed when you fetch a manifest pack.')
         info.setOpenExternalLinks(True); info.setWordWrap(True); form.addRow(info)
@@ -47,14 +54,21 @@ class CredentialDialog(QDialog):
         def done(message):
             self.jobs.discard(job); self.busy = False
             self.status.setText(message); self.submit.setEnabled(True); self.close_button.setEnabled(True)
+            if message.startswith(('Saved VPN credentials removed.','Saved authentication removed.')):
+                self.secret.clear()
             if hasattr(self, 'logout'): self.logout.setEnabled(True)
         job.signals.finished.connect(done)
         self.status.setText('Signing in through the isolated VPN…' if self.provider == 'Moon' else 'Updating KWallet…')
         QThreadPool.globalInstance().start(job)
 
     def save(self):
-        secret = self.secret.text(); username = self.username.text(); self.secret.clear()
+        secret = self.secret.text(); username = self.username.text()
+        if self.provider=='Moon':self.secret.clear()
         def operation():
+            if self.provider!='Moon' and not secret:
+                (Wallet() if self.provider=='NordVPN' else HubcapKeyWallet()).clear()
+                if self.provider!='NordVPN':self.network.hubcap_confirmed=False
+                return 'Saved VPN credentials removed. The current connection is unchanged.' if self.provider=='NordVPN' else 'Saved authentication removed.'
             if self.provider == 'Moon':
                 Moon(Transport(self.network), MoonSessionWallet()).login(secret)
                 self.network.moon_confirmed = True

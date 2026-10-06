@@ -99,7 +99,8 @@ class DownloadDialog(QDialog):
         line = QHBoxLayout(); line.setSpacing(10); line.addWidget(self.username); line.addWidget(forget)
         form.addRow('Steam account name', line); auth_rows.append(line)
         self.destination = QLineEdit()
-        self.default_root = QSettings('Playlite','SteamDownloader').value('download_root', str(Path.home()/'Downloads'))
+        from .download_location import default_download_root
+        self.default_root = default_download_root()
         browse = QPushButton('Browse…'); browse.clicked.connect(self.browse)
         line = QHBoxLayout(); line.setSpacing(10); line.addWidget(self.destination); line.addWidget(browse)
         form.addRow('Download folder', line); download_rows.append(line)
@@ -248,7 +249,9 @@ class DownloadDialog(QDialog):
             self.authenticate = QPushButton('Authenticate')
             self.authenticate.setText('Open Steam desktop')
             self.authenticate.clicked.connect(lambda:self.open_authentication('Steam'))
-            footer.addWidget(self.details_button);footer.addWidget(self.authenticate);footer.addStretch()
+            self.auth_check=QPushButton('Check authentication')
+            self.auth_check.clicked.connect(self.check_environment_authentication)
+            footer.addWidget(self.details_button);footer.addWidget(self.authenticate);footer.addWidget(self.auth_check);footer.addStretch()
             footer.addWidget(self.start_button);footer.addWidget(self.cancel)
             form.addRow(footer);self.start_button.show();self.cancel.show()
             completed = QHBoxLayout();completed.setSpacing(10);completed.addStretch()
@@ -500,7 +503,8 @@ class DownloadDialog(QDialog):
             self.refresh_steam_status()
         if not self.authentication and not self.auto_started:
             self.auto_started=True
-            QTimer.singleShot(0,self.connect_vpn)
+            if QSettings('Playlite','SteamDownloader').value('auto_start_downloader',True,type=bool):
+                QTimer.singleShot(0,lambda:self.connect_vpn(automatic=True))
 
     def add_to_library(self):
         parent=self.parentWidget()
@@ -534,7 +538,7 @@ class DownloadDialog(QDialog):
             for cache in dialog.download_caches:cache.cleanup()
             self.status.setText('Game added to Playlite.')
 
-    def connect_vpn(self):
+    def connect_vpn(self,automatic=False):
         if self.busy:return
         self.vpn_connecting=True
         self.cancel.setText('Cancel connection')
@@ -548,8 +552,13 @@ class DownloadDialog(QDialog):
                 preferences = Preferences(settings.value('country', ''), settings.value('protocol', 'udp')).validate()
                 self.owns_connection = not self.authentication
                 message=self.network.connect(preferences,*Wallet().read(),progress=progress)
-            from .steam_runtime import start_with_vpn
-            start_with_vpn(self.network,progress)
+            if automatic:
+                from .steam_runtime import start_with_vpn
+                try:
+                    steam_message=start_with_vpn(self.network,progress)
+                    if steam_message:progress(steam_message)
+                except (OSError,RuntimeError) as error:
+                    progress("Steam startup failed: "+str(error)+". VPN remains connected; retry from Steam setup.")
             return message
         def done(message):
             self.status.setText('')
@@ -602,6 +611,22 @@ class DownloadDialog(QDialog):
         if progress and not self.authentication:job.signals.progress.connect(self.log.appendPlainText)
         self.status.setText('Working through the isolated VPN…')
         QThreadPool.globalInstance().start(job)
+
+    def check_environment_authentication(self):
+        from .steam_runtime import SteamRuntime
+        def completed(result):
+            labels={'saved_session':'saved session present (refreshed if expired)',
+                    'not_signed_in':'not signed in · open LuaTools to sign in',
+                    'not_configured':'API key missing · configure it in LuaTools',
+                    'verified':'API key verified','rejected':'API key rejected',
+                    'unavailable':'could not verify · retry when the service is available'}
+            for name in ('luatools','hubcap'):
+                row=result.get(name,{})
+                text=('LuaTools' if name=='luatools' else 'HubCap')+' · '+labels.get(row.get('state'),'could not verify')
+                quota=[field.replace('_',' ')+' '+str(row[field]) for field in ('daily_usage','daily_limit','remaining','limit','used','reset','retry_after') if field in row]
+                self.log.appendPlainText(text+(' · '+' · '.join(quota) if quota else ''))
+            self.status.setText('Authentication check finished.')
+        self.task(lambda:SteamRuntime(self.network).request('authentication_status'),completed)
 
     def login(self):
         code = self.code.text(); self.code.clear()

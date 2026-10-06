@@ -80,7 +80,7 @@ class SteamRuntimeDialog(QDialog):
             with socket.socket() as connection:
                 connection.bind(('127.0.0.1',0));self.port=connection.getsockname()[1]
             try:
-                self.relay=subprocess.Popen(['socat',f'TCP-LISTEN:{self.port},bind=127.0.0.1,reuseaddr,fork',f'UNIX-CONNECT:{self.runtime.root}/control/web.sock'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                self.relay=subprocess.Popen(['socat',f'TCP-LISTEN:{self.port},bind=127.0.0.1,reuseaddr,fork','UNIX-CONNECT:web.sock'],cwd=self.runtime.root/'control',stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             except OSError:
                 self.status.setText('Install socat to open the isolated desktop.');return
         self.runtime.network._steam_desktop_relay=(self.relay,self.port)

@@ -1,4 +1,5 @@
 import tempfile
+import os
 import importlib.util
 import unittest
 from pathlib import Path
@@ -9,6 +10,37 @@ from downloader.steam_runtime import SteamRuntime,RUNTIME_IMAGE
 from downloader.constants import IMAGE,WORKER_LABEL
 
 class RuntimeTests(unittest.TestCase):
+    def test_bridge_requests_support_long_repository_profile_paths(self):
+        import socket,threading
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)/('long-profile-folder-'*7)
+            control=root/'control';control.mkdir(parents=True)
+            self.assertGreater(len(str(control/'bridge.sock')),108)
+            descriptor=os.open(control,os.O_RDONLY|os.O_DIRECTORY)
+            try:
+                with socket.socket(socket.AF_UNIX) as listener:
+                    listener.bind(f'/proc/self/fd/{descriptor}/bridge.sock')
+                    listener.listen();listener.settimeout(3)
+                    def respond():
+                        with listener.accept()[0] as client:
+                            client.recv(4096)
+                            client.sendall(b'{"ok":true,"result":{"steam_running":false}}\n')
+                    thread=threading.Thread(target=respond);thread.start()
+                    try:self.assertEqual(SteamRuntime(Mock(),root).request('status'),{'steam_running':False})
+                    finally:thread.join(3)
+            finally:os.close(descriptor)
+    def test_start_exposes_cef_for_luamoon_ui_injection(self):
+        path=Path(__file__).resolve().parents[1]/'tools/steam/bridge.py'
+        spec=importlib.util.spec_from_file_location('ui_start_bridge',path)
+        bridge=importlib.util.module_from_spec(spec);spec.loader.exec_module(bridge)
+        with tempfile.TemporaryDirectory() as directory:
+            bridge.HOME=Path(directory)
+            with patch.object(bridge,'steam_running',return_value=False),patch.object(bridge,'prepare_library'),patch.object(bridge,'launch') as launch:
+                bridge.dispatch({'command':'start'})
+                args=launch.call_args.args[0]
+                self.assertIn('-cef-enable-debugging',args)
+                self.assertEqual(launch.call_args.kwargs['environment']['SLSSTEAM_AUDIT_BINDALL'],'1')
+
     def test_manual_stop_releases_only_owned_environment(self):
         network=Mock();network.container='gateway';runtime=SteamRuntime(network)
         entry={'Config':{'Labels':{WORKER_LABEL:'gateway'}},'HostConfig':{'NetworkMode':'container:gateway'}}

@@ -311,8 +311,20 @@ def dispatch(request):
     if command=='start':
         if not steam_running():
             prepare_library()
-            steam=launch([steam_binary(),'-no-cef-sandbox'],'steam.log',umask=0o022)
+            # The UI sidecar requires CEF debugging even when the wrapper's
+            # webhelper argument rewrite misses a newer Steam launch path.
+            steam=launch([steam_binary(),'-no-cef-sandbox','-cef-enable-debugging'],'steam.log',umask=0o022,
+                         environment=dict(os.environ,SLSSTEAM_AUDIT_BINDALL='1'))
         lumen=HOME/'.local/share/Lumen'
+        backend_main=lumen/'luatools/backend/main.lua'
+        marker='-- Playlite private control bridge'
+        if backend_main.is_file():
+            source=backend_main.read_text()
+            if marker in source:
+                updated=source[:source.index(marker)]+marker+'\n'+Path('/opt/moon_bridge.lua').read_text()
+                if updated!=source:
+                    temporary=backend_main.with_suffix('.playlite-tmp')
+                    temporary.write_text(updated);temporary.replace(backend_main)
         if (lumen/'lumen').is_file():
             environment=dict(os.environ,LUMEN_BACKEND_DIR=str(lumen/'luatools/backend'),LUMEN_LUA_DIR=str(lumen/'lua'))
             # Lumen's own flock prevents duplicate sidecars. Launching explicitly
@@ -325,8 +337,8 @@ def dispatch(request):
         if installer is None or installer.poll() is not None:
             installer=launch(['python3','/opt/setup_moon.py'],'moon-setup.log')
         return dispatch({'command':'status'})
-    if command in ('add','add_status','cancel_add'):
-        app=request.get('appid')
+    if command in ('add','add_status','cancel_add','authentication_status'):
+        app=1 if command=='authentication_status' else request.get('appid')
         app_id(app)
         from provider_limits import install_capture,read_limits
         backend=HOME/'.local/share/Lumen/luatools/backend'
@@ -337,7 +349,7 @@ def dispatch(request):
         pending=CONTROL/'moon-request.tmp'
         pending.write_text(json.dumps({'id':identifier,'command':command,'appid':app}))
         pending.replace(CONTROL/'moon-request.json')
-        deadline=time.monotonic()+8
+        deadline=time.monotonic()+(45 if command=='authentication_status' else 8)
         while time.monotonic()<deadline:
             path=CONTROL/'moon-response.json'
             if path.exists() and path.stat().st_size<=65536:

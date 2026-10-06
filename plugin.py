@@ -5,6 +5,7 @@ from playlite.providers import GenericPlugin
 from .credentials import Wallet
 from .network import Network
 from .settings import Preferences
+from .download_location import default_download_root
 
 class Signals(QObject):
     finished = pyqtSignal(str)
@@ -50,6 +51,14 @@ class Plugin(GenericPlugin):
                 self.network.disconnect()
             except RuntimeError:
                 pass  # The independent guardian retries cleanup after process exit.
+
+    def before_launch(self,window,game):
+        from .vpn_lifecycle import disconnect_when_idle
+        # Active jobs include setup and authentication; they must finish before
+        # their shared network namespace can be released.
+        if not self.busy and not self.jobs:
+            disconnect_when_idle(self.network,release_session=True)
+        return True
 
     def main_menu_actions(self, window):
         def open_downloader():
@@ -164,63 +173,91 @@ class Plugin(GenericPlugin):
         form.addRow(widget.keep_steam_open)
         lifetime=QLabel('Keeping Steam open also keeps its isolated VPN connected. Both stop when Playlite exits. Disconnect stops both immediately.')
         lifetime.setWordWrap(True);form.addRow(lifetime)
-        setup = QPushButton('Set up isolated Steam…')
-        desktop = QPushButton('Open Steam desktop…')
+        widget.auto_start=QCheckBox('Connect VPN and start Steam when opening the downloader')
+        widget.auto_start.setChecked(self.settings().value('auto_start_downloader',True,type=bool))
+        form.addRow(widget.auto_start)
+        widget.steam_status=QLabel('Steam: checking status…')
+        widget.steam_status.setWordWrap(True)
+        widget.steam_status.setMinimumHeight(widget.steam_status.fontMetrics().height()*2+8)
+        form.addRow(widget.steam_status)
+        widget.steam_busy=False
+        widget.steam_checking=False
+        widget.steam_generation=0
+        widget.steam_state='unknown'
+        widget.steam_error=''
+        widget.steam_action=QPushButton('Set up Steam…')
+        widget.steam_setup_button=QPushButton('Open setup…')
+        widget.steam_setup_button.hide()
         widget.stop_steam_button=QPushButton('Stop Steam environment')
-        widget.stop_steam_button.clicked.connect(lambda:self.stop_steam(widget))
-        manage = QPushButton('Manage installed content…')
-        explanation = QLabel('Set up Steam and LuaMoon in a private container. Steam and manifest provider authentication are managed in its desktop. Saved container sessions are retained.')
-        explanation.setWordWrap(True)
-        form.addRow(explanation)
+        widget.delete_steam_button=QPushButton('Delete isolated Steam…')
+        widget.steam_hint=QLabel('')
+        widget.steam_hint.setWordWrap(True)
         def open_setup(install=False):
-            if self.busy:
-                widget.status.setText('Wait for the VPN connection to finish before opening setup.')
-                return
+            if self.busy or widget.steam_busy:
+                widget.steam_status.setText('Steam: wait for the current operation to finish.');return
+            from .vpn_lifecycle import has_downloads
+            if install and has_downloads(self.network):
+                widget.steam_status.setText('Steam: pause or cancel downloads before setup.');return
             self.save_settings(widget)
             from .steam_runtime_dialog import SteamRuntimeDialog
-            dialog = SteamRuntimeDialog(self.network, widget)
-            if install: QTimer.singleShot(0, dialog.install)
-            else: QTimer.singleShot(0, dialog.desktop)
-            dialog.exec()
-        setup.clicked.connect(lambda: open_setup(True))
-        desktop.clicked.connect(lambda: open_setup(False))
-        line = QHBoxLayout(); line.setSpacing(10)
+            widget.steam_busy=True
+            self.update_steam_controls(widget)
+            try:
+                dialog=SteamRuntimeDialog(self.network,widget)
+                if install:QTimer.singleShot(0,dialog.install)
+                else:QTimer.singleShot(0,dialog.desktop)
+                dialog.exec()
+            finally:
+                widget.steam_busy=False
+                self.refresh_steam(widget)
+        widget.open_steam_setup=open_setup
+        def steam_action():
+            if widget.steam_state in ('missing','incomplete','unknown'):open_setup(True)
+            elif widget.steam_state=='running':open_setup(False)
+            else:self.start_steam(widget)
+        widget.steam_action.clicked.connect(steam_action)
+        widget.steam_setup_button.clicked.connect(lambda:open_setup(True))
+        widget.stop_steam_button.clicked.connect(lambda:self.stop_steam(widget))
+        widget.delete_steam_button.clicked.connect(lambda:self.delete_steam(widget))
+        line=QHBoxLayout()
+        line.setSpacing(10)
+        for button in (widget.steam_action,widget.steam_setup_button,widget.stop_steam_button,widget.delete_steam_button):line.addWidget(button)
+        form.addRow(line)
+        form.addRow(widget.steam_hint)
+        manage=QPushButton('Manage installed content…')
         def manage_content():
-            if self.busy:
-                widget.status.setText('Wait for the VPN connection to finish.');return
+            if self.busy or widget.steam_busy:return
             from .installed_games_dialog import InstalledGamesDialog
             InstalledGamesDialog(self.network,widget).exec()
         manage.clicked.connect(manage_content)
-        line.addWidget(setup); line.addWidget(desktop);line.addWidget(widget.stop_steam_button); line.addStretch()
-        form.addRow(line)
-        form.addRow(manage)
+        manage_row=QHBoxLayout()
+        manage_row.addWidget(manage)
+        manage_row.addStretch()
+        form.addRow(manage_row)
+        widget.steam_timer=QTimer(widget)
+        widget.steam_timer.setInterval(5000)
+        widget.steam_timer.timeout.connect(lambda:self.refresh_steam(widget) if widget.isVisible() else None)
+        widget.steam_timer.start()
         form = section('Downloads')
-        widget.download_root = QLineEdit(self.settings().value('download_root', str(Path.home() / 'Downloads')))
+        widget.download_root = QLineEdit(self.settings().value('download_root', '', type=str))
+        widget.download_root.setPlaceholderText(default_download_root() + ' (automatic)')
         browse_root = QPushButton('Browse…')
         def choose_root():
-            folder = QFileDialog.getExistingDirectory(widget, 'Default download location', widget.download_root.text())
+            folder = QFileDialog.getExistingDirectory(widget, 'Default download location', widget.download_root.text() or default_download_root())
             if folder: widget.download_root.setText(folder)
         browse_root.clicked.connect(choose_root)
         root_line = QHBoxLayout(); root_line.setSpacing(10)
         root_line.addWidget(widget.download_root); root_line.addWidget(browse_root)
         form.addRow('Default location', root_line)
-        hint = QLabel('Each game downloads into its own folder here. Missing folders are created automatically.')
+        hint = QLabel('Leave empty to use the General installation folder automatically. Each game downloads into its own folder; missing folders are created automatically.')
         hint.setWordWrap(True); form.addRow(hint)
         def on_open():
-            widget.settings_closed = False
-            if self.busy or not widget.isVisible(): return
-            if self.network.container:
-                self.start(widget, lambda progress: self.network.check())
-                return
-            try:
-                credentials = Wallet().read()
-                preferences = Preferences(widget.country.text().strip(), widget.protocol.currentText()).validate()
-            except ValueError:
-                return  # No saved service credentials; wait for an explicit login.
-            except Exception as error:
-                widget.status.setText(str(error))
-                return
-            self.start(widget, lambda progress: self.network.connect(preferences, *credentials, progress=progress), cancellable=True)
+            widget.settings_closed=False
+            if not widget.isVisible():return
+            self.refresh_steam(widget)
+            if not self.busy:
+                if self.network.container:self.start(widget,lambda progress:self.network.check())
+                else:widget.status.setText('VPN disconnected')
         widget.on_open = on_open
         return widget
 
@@ -251,12 +288,91 @@ class Plugin(GenericPlugin):
         if self.busy:
             widget.status.setText('Wait for the current operation to finish before stopping Steam.');return
         from .steam_runtime import SteamRuntime
-        self.start(widget,lambda progress:SteamRuntime(self.network).stop(),start_steam=False)
+        self.steam_task(widget,lambda progress:SteamRuntime(self.network).stop(),lambda message:self.refresh_steam(widget))
 
-    def start(self, widget, function, cancellable=False,start_steam=True):
+    def update_steam_controls(self,widget):
+        from .vpn_lifecycle import has_downloads
+        active=has_downloads(self.network)
+        busy=self.busy or widget.steam_busy
+        widget.steam_action.setEnabled(not busy and not (active and widget.steam_state in ('missing','incomplete','unknown')))
+        widget.steam_setup_button.setVisible(widget.steam_state=='error')
+        widget.steam_setup_button.setEnabled(not busy and not active)
+        widget.stop_steam_button.setEnabled(not busy and not active and widget.steam_state=='running')
+        widget.delete_steam_button.setEnabled(not busy and not active)
+        widget.steam_hint.setText('Pause or cancel active and queued downloads before setup, stopping, or deleting Steam.' if active else 'Wait for the current operation to finish.' if busy else 'Exported games and NordVPN credentials are kept when deleting Steam.')
+
+    def steam_task(self,widget,operation,done,inspection=False):
+        if self.busy or widget.steam_busy:return
+        if inspection:
+            if widget.steam_checking:return
+            widget.steam_checking=True
+        else:
+            widget.steam_generation+=1
+            widget.steam_busy=True
+            widget.steam_error=''
+            self.update_steam_controls(widget)
+        generation=widget.steam_generation
+        result=[]
+        def work():
+            result.append(operation(job.signals.progress.emit))
+            return ''
+        job=Job(work);self.jobs.add(job)
+        job.signals.progress.connect(widget.steam_status.setText)
+        def finished(error):
+            if inspection:widget.steam_checking=False
+            else:widget.steam_busy=False
+            self.jobs.discard(job)
+            if widget.settings_closed:return
+            if inspection and (widget.steam_busy or generation!=widget.steam_generation):return
+            if result:done(result[0])
+            else:
+                widget.steam_state='error'
+                widget.steam_error=error
+                widget.steam_status.setText('Steam: '+error)
+                widget.steam_action.setText('Retry Steam')
+            self.update_steam_controls(widget)
+        job.signals.finished.connect(finished)
+        QThreadPool.globalInstance().start(job)
+
+    def refresh_steam(self,widget):
+        from .steam_runtime import installation_status
+        def render(state):
+            if widget.steam_error:
+                widget.steam_state='error'
+                widget.steam_status.setText('Steam: '+widget.steam_error)
+                widget.steam_action.setText('Retry Steam')
+                return
+            widget.steam_state=state
+            labels={'missing':('not installed','Set up Steam…'),'incomplete':('setup incomplete','Set up Steam…'),'stopped':('stopped','Start Steam'),'running':('running','Open desktop…')}
+            text,action=labels[state]
+            widget.steam_status.setText('Steam: '+text)
+            widget.steam_action.setText(action)
+        self.steam_task(widget,lambda progress:installation_status(self.network),render,inspection=True)
+
+    def start_steam(self,widget):
+        if not self.network.container:
+            widget.steam_status.setText('Steam: connect the VPN before starting.');return
+        from .steam_runtime import start_with_vpn
+        self.steam_task(widget,lambda progress:start_with_vpn(self.network,progress),lambda message:(widget.steam_status.setText(message),self.refresh_steam(widget)))
+
+    def delete_steam(self,widget):
+        from .vpn_lifecycle import has_downloads
+        if self.busy or widget.steam_busy or has_downloads(self.network):
+            widget.steam_status.setText('Steam: finish setup or pause/cancel downloads before deleting.');return
+        from .environment_uninstall import EnvironmentRemovalDialog
+        widget.steam_busy=True
+        self.update_steam_controls(widget)
+        try:EnvironmentRemovalDialog(self.network,widget,environment_only=True).exec()
+        finally:
+            widget.steam_busy=False
+            if not self.network.container:widget.status.setText('VPN disconnected')
+            self.refresh_steam(widget)
+
+    def start(self, widget, function, cancellable=False,start_steam=False):
         if self.busy:
             return
         self.busy = True
+        if isinstance(widget,SettingsWidget):self.update_steam_controls(widget)
         if cancellable:
             self.network.cancelled.clear()
         for button in widget.buttons:
@@ -291,6 +407,9 @@ class Plugin(GenericPlugin):
                 widget.buttons[-1].setText('Disconnect')
                 for button in widget.buttons:
                     button.setEnabled(True)
+                if isinstance(widget,SettingsWidget):
+                    self.update_steam_controls(widget)
+                    self.refresh_steam(widget)
             except RuntimeError:
                 pass  # Settings may have been closed while the operation was running.
         job.signals.finished.connect(finished)
@@ -299,11 +418,13 @@ class Plugin(GenericPlugin):
     def save_settings(self, widget):
         preferences = Preferences(widget.country.text().strip(), widget.protocol.currentText()).validate()
         settings = self.settings()
-        root=Path(widget.download_root.text().strip() or str(Path.home()/'Downloads')).expanduser()
-        if not root.is_absolute():raise ValueError('Choose an absolute default download location.')
-        settings.setValue('download_root',str(root))
+        value = widget.download_root.text().strip()
+        root = Path(value).expanduser() if value else None
+        if root is not None and not root.is_absolute():raise ValueError('Choose an absolute default download location.')
+        settings.setValue('download_root', str(root) if root is not None else '')
         settings.setValue('country', preferences.country)
         settings.setValue('protocol', preferences.protocol)
         settings.setValue('keep_steam_open',widget.keep_steam_open.isChecked())
         settings.setValue('keep_vpn_open',widget.keep_vpn_open.isChecked())
+        settings.setValue('auto_start_downloader',widget.auto_start.isChecked())
         settings.sync()

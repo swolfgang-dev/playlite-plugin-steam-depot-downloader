@@ -44,7 +44,7 @@ def has_downloads(network):
     return queue is not None and any(row.state in ('Queued','Downloading') for row in queue.entries)
 
 
-def disconnect_when_idle(network):
+def disconnect_when_idle(network,release_session=False):
     if has_downloads(network) or has_open_windows(network):
         network.disconnect_pending=True
         queue=vars(network).get('download_queue')
@@ -58,7 +58,7 @@ def disconnect_when_idle(network):
         return
     if vars(network).get('_disconnect_job') is not None:return
     network.disconnect_pending=False
-    keep_steam,keep_vpn=session_preferences()
+    keep_steam,keep_vpn=(False,False) if release_session else session_preferences()
     if keep_steam:return  # Steam depends on the isolated VPN namespace.
     if not keep_vpn:network.cancel()
     from .plugin import Job

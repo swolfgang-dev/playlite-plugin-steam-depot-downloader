@@ -43,8 +43,27 @@ class EnvironmentRemovalTests(unittest.TestCase):
             if arguments[1]=='ps':return Mock(returncode=0,stdout='')
             return Mock(returncode=0,stdout=json.dumps([{'Config':{'Labels':{}},'Labels':{}}]))
         with tempfile.TemporaryDirectory() as directory,patch('downloader.environment_uninstall.SteamRuntime',return_value=Mock(root=Path(directory),volume='unowned')),patch('downloader.environment_uninstall.subprocess.run',side_effect=run),patch('downloader.vpn_lifecycle.has_downloads',return_value=False):
-            remove_environment(network,True)
+            with self.assertRaisesRegex(RuntimeError,'Cleanup incomplete'):
+                remove_environment(network,True)
         self.assertFalse(any('rm' in call for call in calls))
+
+    def test_explicit_legacy_cleanup_preserves_resources_owned_by_another_profile(self):
+        for owner,removed in ((None,True),('another-profile',False)):
+            with self.subTest(owner=owner),tempfile.TemporaryDirectory() as directory:
+                calls=[]
+                labels={'io.playlite.steam.setup':'old-build'}
+                if owner:labels[OWNER_LABEL]=owner
+                def run(arguments,**kwargs):
+                    calls.append(arguments)
+                    if arguments[1]=='ps':return Mock(returncode=0,stdout='')
+                    return Mock(returncode=0,stdout=json.dumps([{'Config':{'Labels':labels},'Labels':labels}]))
+                runtime=Mock(root=Path(directory),volume='profile-volume')
+                with patch('downloader.environment_uninstall.SteamRuntime',return_value=runtime),patch('downloader.environment_uninstall.subprocess.run',side_effect=run),patch('downloader.vpn_lifecycle.has_downloads',return_value=False):
+                    if removed:remove_environment(Mock(container=None),True,allow_legacy=True)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError,'Cleanup incomplete'):
+                            remove_environment(Mock(container=None),True,allow_legacy=True)
+                self.assertEqual(any('rm' in call for call in calls),removed)
 
     def test_active_downloads_prevent_all_cleanup(self):
         with patch('downloader.vpn_lifecycle.has_downloads',return_value=True),patch('downloader.environment_uninstall.subprocess.run') as run:

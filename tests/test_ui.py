@@ -21,7 +21,7 @@ class UiTests(unittest.TestCase):
 
     def wait(self, plugin):
         end = time.monotonic() + 3
-        while (plugin.busy or vars(plugin.network).get('_disconnect_job') is not None) and time.monotonic() < end:
+        while (plugin.busy or plugin.jobs or vars(plugin.network).get('_disconnect_job') is not None) and time.monotonic() < end:
             self.app.processEvents()
             time.sleep(.01)
         self.assertFalse(plugin.busy)
@@ -136,7 +136,7 @@ class AutoConnectTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_saved_credentials_connect_only_when_page_opens(self):
+    def test_settings_open_never_connects_with_saved_credentials(self):
         plugin = Plugin()
         with patch('downloader.credentials.MoonSessionWallet.read', return_value=None):
             widget = plugin.create_settings()
@@ -144,10 +144,9 @@ class AutoConnectTests(unittest.TestCase):
             wallet.return_value.read.return_value = ('service-user', 'service-password')
             start.assert_not_called()
             widget.show(); self.app.processEvents()
-            start.assert_called_once()
-            self.assertTrue(start.call_args.kwargs['cancellable'])
-            start.call_args.args[1](lambda message: None)
-            self.assertEqual(connect.call_args.args[1:], ('service-user', 'service-password'))
+            start.assert_not_called()
+            connect.assert_not_called()
+            wallet.return_value.read.assert_not_called()
             widget.hide()
 
     def test_no_credentials_does_not_connect(self):
@@ -159,6 +158,24 @@ class AutoConnectTests(unittest.TestCase):
             widget.show(); self.app.processEvents()
             start.assert_not_called()
             widget.hide()
+
+    def test_saved_password_is_masked_preserved_and_can_be_cleared(self):
+        from downloader.authentication_dialog import CredentialDialog
+        from unittest.mock import Mock
+        from PyQt6.QtWidgets import QLineEdit
+        with patch('downloader.authentication_dialog.Wallet') as wallet:
+            wallet.return_value.read.return_value=('service-user','saved-secret')
+            dialog=CredentialDialog('NordVPN',Mock())
+            self.assertEqual(dialog.secret.echoMode(),QLineEdit.EchoMode.Password)
+            self.assertTrue(dialog.secret.displayText())
+            self.assertNotIn('saved-secret',dialog.secret.displayText())
+            dialog.run=lambda operation:operation()
+            dialog.save()
+            wallet.return_value.save.assert_called_once_with('service-user','saved-secret')
+            dialog.secret.clear()
+            dialog.save()
+            wallet.return_value.clear.assert_called_once()
+            dialog.close()
 
     def test_forget_is_in_nordvpn_popup_and_preserves_connection(self):
         from downloader.authentication_dialog import CredentialDialog

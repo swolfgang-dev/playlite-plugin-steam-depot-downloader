@@ -82,20 +82,25 @@ class SteamRuntime:
         except RuntimeError:self.network.docker('exec',self.network.container,'iptables','-I','PLAYLITE_WORKER','1','-o','lo','-j','RETURN')
         args=self.arguments()
         args.insert(1,'--detach')
-        subprocess.run(['docker',*args],capture_output=True,text=True,check=True)
+        launched=subprocess.run(['docker',*args],capture_output=True,text=True)
+        if launched.returncode:
+            raise RuntimeError('Could not start isolated Steam: '+(launched.stderr.strip() or 'Docker rejected the container launch.'))
         return 'Starting isolated Steam environment. Refresh status in a moment.'
 
     def request(self,command,appid=None,*,platform=None,language='english',dlc=None,eula_id=None,eula_version=None):
-        if command not in ('start','status','stop','install_moon','add','add_status','cancel_add','install','download_status','pause','eula_status','eula_accept','installed_games','uninstall','retail_selection','has_game','finish_export'):raise ValueError('Unknown runtime action.')
+        if command not in ('authentication_status','start','status','stop','install_moon','add','add_status','cancel_add','install','download_status','pause','eula_status','eula_accept','installed_games','uninstall','retail_selection','has_game','finish_export'):raise ValueError('Unknown runtime action.')
         if command=='install' and platform not in ('windows','linux'):
             raise ValueError('Select Windows or Linux for isolated Steam. macOS is unavailable.')
-        if command in ('start','install_moon','add','install','eula_status','eula_accept','installed_games','uninstall','retail_selection','has_game'):self.network.check()
+        if command in ('authentication_status','start','install_moon','add','install','eula_status','eula_accept','installed_games','uninstall','retail_selection','has_game'):self.network.check()
         with socket.socket(socket.AF_UNIX) as connection:
             # Older running bridges copy a verified private-library install
             # synchronously. Allow them to finish during an in-place upgrade;
             # new bridges report asynchronous export progress instead.
-            connection.settimeout(1800 if command=='download_status' else 120 if command=='retail_selection' else 90 if command=='finish_export' else 35 if command in ('install','eula_status','eula_accept','has_game','installed_games','uninstall') else 10)
-            connection.connect(str(self.root/'control/bridge.sock'))
+            connection.settimeout(60 if command=='authentication_status' else 1800 if command=='download_status' else 120 if command=='retail_selection' else 90 if command=='finish_export' else 35 if command in ('install','eula_status','eula_accept','has_game','installed_games','uninstall') else 10)
+            directory=os.open(self.root/'control',os.O_RDONLY|os.O_DIRECTORY)
+            try:
+                connection.connect(f'/proc/self/fd/{directory}/bridge.sock')
+            finally:os.close(directory)
             payload={'command':command,'appid':appid}
             if command=='eula_accept':payload.update(eula_id=eula_id,eula_version=eula_version)
             if command=='install':payload.update(platform=platform,language=language,dlc=dlc or [])
@@ -110,19 +115,41 @@ class SteamRuntime:
         return response['result']
 
 
+def installation_status(network):
+    """Inspect the existing installation without starting or provisioning it."""
+    image=subprocess.run(['docker','image','inspect',RUNTIME_IMAGE],capture_output=True,timeout=10)
+    if image.returncode:return 'missing'
+    runtime=SteamRuntime(network)
+    volume=subprocess.run(['docker','volume','inspect',runtime.volume],capture_output=True,timeout=10)
+    if volume.returncode:return 'missing'
+    if not network.container:return 'stopped'
+    try:state=runtime.request('status')
+    except (OSError,RuntimeError):return 'stopped'
+    if not state.get('steam_ready'):return 'incomplete'
+    return 'running' if state.get('steam_running') else 'stopped'
+
+
 def start_with_vpn(network,progress=lambda message:None):
     """Launch an installed private Steam client whenever its VPN is opened."""
     import time
     if not network.container:return
     image=subprocess.run(['docker','image','inspect',RUNTIME_IMAGE],capture_output=True,timeout=30)
-    if image.returncode:return  # First-time provisioning remains an explicit setup action.
+    if image.returncode:
+        return 'Steam is not installed. Use Set up isolated Steam.'
+    runtime=SteamRuntime(network)
+    volume=subprocess.run(['docker','volume','inspect',runtime.volume],capture_output=True,timeout=30)
+    if volume.returncode:
+        return 'Steam is not installed. Use Set up isolated Steam.'
     progress('Starting isolated Steam…')
-    runtime=SteamRuntime(network);runtime.start()
+    runtime.start()
     deadline=time.monotonic()+90
     while True:
         network.check_cancelled()
         try:
-            runtime.request('start');return
+            state=runtime.request('status')
+            if isinstance(state,dict) and not state.get('steam_ready'):
+                return 'VPN connected. Steam setup is incomplete; use Set up isolated Steam.'
+            runtime.request('start');return 'Steam started.'
         except (OSError,RuntimeError):
             if time.monotonic()>=deadline:
                 raise RuntimeError('VPN connected, but isolated Steam could not start. Open Steam setup to retry.')
