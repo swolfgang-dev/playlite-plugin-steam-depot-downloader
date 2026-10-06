@@ -1,5 +1,5 @@
 from pathlib import Path
-from PyQt6.QtCore import QTimer, Qt, QCoreApplication, QObject, QRunnable, QThreadPool, QSettings, pyqtSignal
+from PyQt6.QtCore import QTimer, Qt, QCoreApplication, QObject, QRunnable, QThreadPool, QSettings, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG, QThread
 from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout, QGroupBox, QVBoxLayout, QSizePolicy, QDialog, QFileDialog, QCheckBox
 from playlite.providers import GenericPlugin
 from .credentials import Wallet
@@ -10,6 +10,10 @@ from .download_location import default_download_root
 class Signals(QObject):
     finished = pyqtSignal(str)
     progress = pyqtSignal(str)
+
+    @pyqtSlot(str)
+    def deliver(self, text):
+        self.finished.emit(text)
 
 class Job(QRunnable):
     def __init__(self, function):
@@ -22,7 +26,10 @@ class Job(QRunnable):
             text = self.function()
         except Exception as error:
             text = str(error)
-        self.signals.finished.emit(text)
+        if QThread.currentThread() == self.signals.thread():
+            self.signals.deliver(text)
+        else:
+            QMetaObject.invokeMethod(self.signals, 'deliver', Qt.ConnectionType.QueuedConnection, Q_ARG(str, text))
 
 class SettingsWidget(QWidget):
     """Start the connection only when the settings page becomes visible."""
