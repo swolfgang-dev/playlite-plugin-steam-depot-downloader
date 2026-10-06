@@ -95,7 +95,10 @@ Progress shows bytes, percentage, average transferred speed and an estimated tim
 Set **Default location** under plugin settings → Downloads. The downloader suggests
 `<default location>/<game name>` and creates missing directories when Download is
 pressed. Existing nonempty folders are rejected. Files download into hidden staging,
-then validated output is promoted with atomic no-overwrite renames. Failures retain
+then validated output is promoted with atomic no-overwrite renames. Filesystems
+that reject those rename flags (including mergerfs) use exclusive hard links or
+verified copies and exclusive directory creation instead; existing files are never
+replaced. Failures retain
 staging. **Open folder** opens the completed destination; **Add to Playlite** lets you
 choose an executable and review the normal add-game editor before saving.
 
