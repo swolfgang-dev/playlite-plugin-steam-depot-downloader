@@ -13,6 +13,15 @@ class QueueIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):cls.app=QApplication.instance() or QApplication([])
 
+    def tearDown(self):
+        from PyQt6 import sip
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        for window in self.app.topLevelWidgets():
+            if not sip.isdeleted(window):
+                window.close()
+                sip.delete(window)
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
     def test_enqueue_transfers_download_and_dialog_can_close_without_disconnect(self):
         window=QWidget();window.download_queue=DownloadQueue(window);window.downloads_panel=Mock()
         window.download_queue.pump=Mock()

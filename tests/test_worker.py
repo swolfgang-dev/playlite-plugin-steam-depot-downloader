@@ -67,3 +67,12 @@ class KeyOnlyWorkerTests(unittest.TestCase):
         self.assertIn('-depotkeys',args)
         self.assertIn('-manifest',args)
         self.assertNotIn('test data',str(args))
+
+# Keep Qt alive across test methods and until all widgets are destroyed.
+import os
+TEST_CONFIG = tempfile.TemporaryDirectory(prefix='playlite-test-config-')
+os.environ['XDG_CONFIG_HOME'] = TEST_CONFIG.name
+from PyQt6.QtCore import QSettings
+QSettings('Playlite', 'SteamDownloader').setValue('auto_start_downloader', False)
+from PyQt6.QtWidgets import QApplication
+APP = QApplication.instance() or QApplication([])

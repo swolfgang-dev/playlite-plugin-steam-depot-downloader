@@ -537,6 +537,9 @@ class DownloadDialog(QDialog):
             for plugin in dialog.generic_plugins:plugin.after_game_added(parent,dialog.result_game,dialog)
             for cache in dialog.download_caches:cache.cleanup()
             self.status.setText('Game added to Playlite.')
+            self.add_library.setText('Added')
+            self.add_library.setEnabled(False)
+            return dialog.result_game['Id']
 
     def connect_vpn(self,automatic=False):
         if self.busy:return
