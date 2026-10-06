@@ -57,7 +57,10 @@ class Plugin(GenericPlugin):
             dialog=existing or DownloadDialog(self.network,window)
             dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
             dialog.show();dialog.raise_();dialog.activateWindow()
-        return [('Steam Depot Downloader…', open_downloader)]
+        def open_steam_setup():
+            from .steam_runtime_dialog import SteamRuntimeDialog
+            SteamRuntimeDialog(self.network,window).exec()
+        return [('Steam Depot Downloader…', open_downloader),('Isolated Steam setup…',open_steam_setup)]
 
     def settings(self):
         return QSettings('Playlite', 'SteamDownloader')

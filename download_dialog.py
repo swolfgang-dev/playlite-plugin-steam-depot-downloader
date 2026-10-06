@@ -4,6 +4,7 @@ import base64
 import uuid
 import time
 import re
+import copy
 from pathlib import Path
 from PyQt6.QtCore import QProcess, QThreadPool, QSettings, QTimer, Qt, QSize, QUrl
 from PyQt6.QtGui import QIcon, QPixmap, QDesktopServices
@@ -215,6 +216,13 @@ class DownloadDialog(QDialog):
             self.language = QComboBox();self.language.addItem('English','english')
             self.architecture = QComboBox();self.architecture.addItem('64-bit','64');self.architecture.addItem('32-bit','32')
             self.branch = QComboBox();self.branch.addItem('Default (public)','public')
+            self.backend=QComboBox()
+            self.backend.addItem('Steam (LuaMoon)','steam')
+            self.backend.addItem('Depot downloader','depot')
+            backend_settings=QSettings('Playlite','SteamDownloader')
+            self.backend.setCurrentIndex(self.backend.findData(backend_settings.value('download_backend','steam')))
+            self.backend.currentIndexChanged.connect(lambda:backend_settings.setValue('download_backend',self.backend.currentData()))
+            form.insertRow(form.getWidgetPosition(self.depot)[0],'Download using',self.backend)
             form.addRow('Language',self.language);form.addRow('Architecture',self.architecture);form.addRow('Branch',self.branch)
             for control in (self.language,self.architecture,self.branch):
                 control.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
@@ -508,7 +516,7 @@ class DownloadDialog(QDialog):
 
     def set_content_enabled(self, enabled):
         if self.authentication: return
-        for control in (self.appid,self.provider,self.depot,self.destination,self.dlc_list,self.language,self.architecture,self.branch):
+        for control in (self.appid,self.provider,self.depot,self.destination,self.dlc_list,self.language,self.architecture,self.branch,self.backend):
             control.setEnabled(enabled)
 
     def task(self, operation, completed, progress=False, on_error=None):
@@ -641,6 +649,7 @@ class DownloadDialog(QDialog):
     def prepare_download(self):
         if self.authentication: return self.download()
         if self.busy: return
+        if self.backend.currentData()=='steam':return self.prepare_steam_download()
         try:
             if not self.content_info or self.game_app() != self.pack_app:
                 raise ValueError('Choose a game and load its content information first.')
@@ -696,6 +705,50 @@ class DownloadDialog(QDialog):
             self.progress_info.setText('Nothing added to queue. Manifest preparation failed.')
             self.update_dlc_list()
         self.task(operation,done,progress=True,on_error=failed)
+
+    def prepare_steam_download(self):
+        try:
+            if not self.content_info or self.game_app()!=self.pack_app:
+                raise ValueError('Choose a game and load its content information first.')
+            platform=self.depot.currentData()
+            if platform not in ('windows','linux'):
+                raise ValueError('Isolated Steam supports Windows and Linux. Choose Depot downloader for macOS.')
+            if self.branch.currentData()!='public' or self.architecture.currentData()!='64':
+                raise ValueError('Isolated Steam currently supports the default branch and automatic architecture. Use Depot downloader for custom content settings.')
+            if not self.destination.text():raise ValueError('Choose a download folder.')
+            destination=Path(self.destination.text()).expanduser().resolve()
+            if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
+                raise ValueError('Choose an empty download folder.')
+            window=self.parentWidget()
+            if not hasattr(window,'download_queue'):raise ValueError('Open this downloader from the Playlite menu.')
+            selected={self.dlc_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.dlc_list.count()) if self.dlc_list.item(i).checkState()==Qt.CheckState.Checked}
+            snapshot={'app':self.pack_app,'platform':platform,'language':self.language.currentData(),
+                      'dlc':[{'id':entry['id'],'enabled':entry['id'] in selected} for entry in self.content_info.get('dlc',[])],
+                      'info':copy.deepcopy(self.content_info)}
+            from .steam_queue_runner import SteamQueueRunner
+            from .vpn_lifecycle import watch_queue
+            watch_queue(self.network,window.download_queue)
+            network=self.network
+            entry=window.download_queue.enqueue(self.game_name or self.content_info['game']['name'],str(destination),
+                lambda queue,row:SteamQueueRunner(network,window,queue,row,snapshot))
+            self.owns_connection=False
+            self.status.setText('Added '+platform.title()+' download to Downloads.')
+            self.log.appendPlainText(self.status.text())
+            window.downloads_panel.set_open(True)
+            self.steam_queue_entry=entry
+            if not getattr(self,'steam_queue_log_connected',False):
+                window.download_queue.changed.connect(self.sync_steam_queue_log)
+                self.steam_queue_log_connected=True
+        except Exception as error:self.status.setText(str(error))
+
+    def sync_steam_queue_log(self):
+        entry=getattr(self,'steam_queue_entry',None)
+        if entry is None:return
+        message=entry.state+' · '+entry.status
+        if message!=getattr(self,'steam_queue_last_log',''):
+            self.log.appendPlainText(message);self.steam_queue_last_log=message
+        if entry.state=='Complete' and self.destination.text()==entry.destination:
+            self.open_folder.setEnabled(True);self.add_library.setEnabled(True)
 
     def download(self):
         if self.busy: return

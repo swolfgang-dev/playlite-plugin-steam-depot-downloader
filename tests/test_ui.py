@@ -21,10 +21,11 @@ class UiTests(unittest.TestCase):
 
     def wait(self, plugin):
         end = time.monotonic() + 3
-        while plugin.busy and time.monotonic() < end:
+        while (plugin.busy or vars(plugin.network).get('_disconnect_job') is not None) and time.monotonic() < end:
             self.app.processEvents()
             time.sleep(.01)
         self.assertFalse(plugin.busy)
+        self.assertIsNone(vars(plugin.network).get('_disconnect_job'))
         self.app.processEvents()
 
     def test_shutdown_disconnects_an_idle_session(self):

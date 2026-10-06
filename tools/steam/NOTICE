@@ -1,0 +1,10 @@
+seccomp.json derives from Docker/Moby's default seccomp profile:
+https://github.com/moby/profiles/blob/main/seccomp/default.json
+Licensed under Apache License 2.0; see MOBY-LICENSE.
+
+The local profile enables the namespace and mount operations required by
+Steam's nested sandbox while retaining the default restrictions on other calls.
+
+Moon's installer and license are downloaded during the image build from the
+pinned upstream revision recorded in Dockerfile. Component release selection
+is performed by that upstream installer.

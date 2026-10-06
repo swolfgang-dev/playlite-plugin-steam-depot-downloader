@@ -225,3 +225,36 @@ queued or active downloads remain. Waiting and running downloads keep it alive.
 The queue automatically releases the connection when its last download completes,
 fails or is cancelled, including when the downloader window stays open.
 Authentication popups do not release the connection when closed.
+
+### Experimental isolated Steam environment
+
+Build the optional desktop image with `docker build -t playlite-steam-runtime:test tools/steam`,
+then open **Isolated Steam setup** from the main menu while the isolated VPN is connected.
+The desktop is accessible through a loopback browser relay and private Unix sockets.
+Steam uses a dedicated home volume and library; host Steam files are never mounted.
+Keep plugin settings open during setup, since closing idle settings releases the VPN.
+
+Steam's nested sandbox needs the supplied seccomp profile and container-local
+`apparmor=unconfined`: Docker's default AppArmor policy blocks its namespace mounts.
+The runtime still uses UID 65534, no capabilities, no-new-privileges, a read-only
+root filesystem, restricted mounts and the VPN worker firewall.
+
+Install Moon from the setup dialog, then authenticate its providers inside isolated
+Steam. Playlite's existing KWallet provider sessions are not imported into Moon.
+The installer script is pinned and checksum-verified; the upstream installer selects
+component releases. The downloader's **Download using** selector defaults to
+**Steam (LuaMoon)**. Each queued item captures its platform, language and DLC choices.
+Windows selects Proton in the isolated client to request Windows depots; Linux
+clears the per-game compatibility override. The client installs into the registered
+**Playlite downloads** library (`/library`), then verified files are copied without
+overwriting into the folder selected in the downloader. Known wrong-platform depots
+prevent completion. Queued Steam downloads keep the VPN alive, and the last completed,
+failed or cancelled item releases it.
+
+The Steam backend currently uses the public branch and Steam's automatic architecture
+selection. Choose **Depot downloader** for a custom branch, 32-bit architecture or
+macOS: the Linux Steam client cannot natively install macOS content. Steam may also
+download its compatibility runtimes; those stay in the private library and are not
+copied into the game folder. Steam login/EULA prompts may still need attention in the
+isolated desktop. The private bridge exposes bounded actions, not arbitrary JavaScript;
+Lumen verifies the Steam debugger process before applying content selections.

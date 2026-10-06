@@ -16,6 +16,7 @@ from .credentials import validate_credentials
 
 GUARD = '''set -eu
 iptables -N PLAYLITE_WORKER
+iptables -A PLAYLITE_WORKER -o lo -j RETURN
 iptables -A PLAYLITE_WORKER -o tun0 -j RETURN
 iptables -A PLAYLITE_WORKER -j REJECT
 iptables -I OUTPUT 1 -m owner --uid-owner 65534 -j PLAYLITE_WORKER
@@ -228,8 +229,10 @@ class Network:
         if self.docker('exec', self.container, 'cat', '/proc/sys/net/ipv6/conf/all/disable_ipv6') != '1':
             raise RuntimeError('IPv6 isolation is not active.')
         rules = self.docker('exec', self.container, 'iptables', '-S', 'PLAYLITE_WORKER').splitlines()
-        if rules != ['-N PLAYLITE_WORKER', '-A PLAYLITE_WORKER -o tun0 -j RETURN',
-                     '-A PLAYLITE_WORKER -j REJECT --reject-with icmp-port-unreachable']:
+        expected=['-N PLAYLITE_WORKER', '-A PLAYLITE_WORKER -o tun0 -j RETURN',
+                  '-A PLAYLITE_WORKER -j REJECT --reject-with icmp-port-unreachable']
+        with_loopback=[expected[0],'-A PLAYLITE_WORKER -o lo -j RETURN',*expected[1:]]
+        if rules not in (expected,with_loopback):
             raise RuntimeError('The worker firewall is not intact.')
         route = self.docker('exec', self.container, 'ip', 'route', 'get', '1.1.1.1')
         if 'dev tun0' not in route:

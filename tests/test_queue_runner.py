@@ -17,6 +17,9 @@ class QueueIntegrationTests(unittest.TestCase):
         window=QWidget();window.download_queue=DownloadQueue(window);window.downloads_panel=Mock()
         window.download_queue.pump=Mock()
         network=Mock();dialog=DownloadDialog(network,window)
+        dialog.backend.blockSignals(True)
+        dialog.backend.setCurrentIndex(dialog.backend.findData('depot'))
+        dialog.backend.blockSignals(False)
         dialog.owns_connection=True;dialog.pack_app=10;dialog.appid.setText('10');dialog.pack_source='Hubcap'
         dialog.game_name='Game';dialog.content_info={'game':{'id':10,'name':'Game','depots':{}},'dlc':[]}
         dialog.rows=[Depot(11,1,b'manifest')];plan=[(10,dialog.rows[0],'Game')]
