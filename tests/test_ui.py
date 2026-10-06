@@ -256,10 +256,10 @@ class CleanDownloaderTests(unittest.TestCase):
         from unittest.mock import Mock
         dialog=DownloadDialog(Mock())
         rows=[Depot(736261,1,b'x',name='Baba Is You Content'),Depot(736263,2,b'x',name='Baba Is You Linux')]
-        with patch.object(dialog,'task',side_effect=lambda operation,done:done(rows)),patch('downloader.download_dialog.QSettings'):
+        with patch.object(dialog,'task',side_effect=lambda operation,done:done((rows,{'game':{'id':736260,'name':'Baba Is You','owned':True,'depots':{'736261':{'config':{'oslist':'windows'},'manifests':{'public':{'gid':'1'}}},'736263':{'config':{'oslist':'linux'},'manifests':{'public':{'gid':'2'}}}}},'dlc':[]}))),patch('downloader.download_dialog.QSettings'):
             dialog.fetch_pack()
         self.assertEqual(dialog.depot.currentText(),'Linux')
-        self.assertEqual(dialog.depot.currentIndex(),1)
+        self.assertEqual(dialog.depot.currentIndex(),0)
         self.assertTrue(dialog.start_button.isEnabled())
         self.assertIn('736263',dialog.depot_info.text())
         dialog.close()

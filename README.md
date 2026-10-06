@@ -84,9 +84,12 @@ Provider requests fail closed if the VPN checks fail; authenticated HTTP redirec
 are rejected so provider credentials cannot be forwarded to another service.
 
 The downloader searches Steam by name or App ID, selects the game and fetches its
-manifest pack automatically. Linux content is selected by default when the provider
-labels identify a Linux depot; other content remains selectable. **Advanced** holds
-the provider, manual fetch and depot/manifest IDs. **Show details** opens the raw log.
+manifest pack automatically. An authenticated metadata-only worker reads Steam app
+and depot information through the isolated VPN. Linux is selected when Steam lists
+Linux content; common files and matching English/64-bit platform files are included.
+Optional DLC appears as a checklist, with content bundled into base-game files
+explained separately. DLC without separate files does not trigger another download. **Advanced** holds
+the provider, manual fetch and depot IDs. **Show details** opens the raw log.
 Progress shows bytes, percentage, average transferred speed and an estimated time.
 
 Set **Default location** under plugin settings → Downloads. The downloader suggests
@@ -96,7 +99,22 @@ then validated output is promoted with atomic no-overwrite renames. Failures ret
 staging. **Open folder** opens the completed destination; **Add to Playlite** lets you
 choose an executable and review the normal add-game editor before saving.
 
-This remains a **single-depot workflow**: multi-depot orchestration is not implemented.
+The download queues every required base-game depot and the separately selected DLC
+depots. Extra DLC manifest packs are fetched only for selected DLC whose manifests
+are absent from the base-game pack. Missing manifests stop preparation before any
+game files are downloaded. Depots run sequentially in the same staging folder;
+output is promoted only after every depot completes and validates. A failed or
+cancelled depot stops the queue and retains incomplete staging. The destination
+must be empty, and completed output is never merged into existing user files.
+
+Steam authentication is required. Package ownership is not used as a blanket
+availability gate; Steam's depot/CDN response determines whether downloading
+succeeds. No host Steam client, installation or authentication files are accessed.
+Metadata discovery is capped at 100 DLC apps and requests no game files.
+
+Rebuild the native worker using `tools/build_worker.py` after updating this plugin,
+because DLC discovery requires the new `-app-info` worker mode. The build applies
+the metadata patch in `tools/appinfo_patch.py` to the pinned upstream source.
 Steam-authenticated Linux downloads and finalization were verified with Baba Is You
 (App ID 736260, depot 736263), using a Hubcap binary manifest and a saved Steam session.
 Game launching has not been tested. The downloader reuses an existing isolated VPN;

@@ -22,6 +22,9 @@ class DownloadDialog(QDialog):
         self.transport = Transport(network)
         self.moon = Moon(self.transport, MoonSessionWallet())
         self.rows = []
+        self.content_info = None
+        self.content_plan = []
+        self.content_index = 0
         self.game_name = ''
         self.owns_connection = False
         self.jobs = set()
@@ -29,13 +32,16 @@ class DownloadDialog(QDialog):
         self.temporary = None
         self.container = None
         self.output = ''
+        self.total_downloaded = 0
+        self.total_uncompressed = 0
+        self.batch_started_at = 0
         self.setWindowTitle('Steam Depot Downloader — Playlite')
         self.resize(850, 720)
         form = QFormLayout(self)
         self.main_form = form
         form.setHorizontalSpacing(14); form.setVerticalSpacing(12)
         auth_rows = []; download_rows = []
-        notice = QLabel('Downloads use a separate Steam session inside the VPN. Use an account that owns the game. Moon login is saved in KWallet and restored automatically. Download one selected depot at a time; the destination must be empty.')
+        notice = QLabel('Downloads use a separate Steam session inside the VPN. Use an account that owns the game. Moon login is saved in KWallet and restored automatically. Select optional DLC; the destination must be empty.')
         notice.setWordWrap(True)
         form.addRow(notice)
         self.appid = QLineEdit('736260')
@@ -94,7 +100,7 @@ class DownloadDialog(QDialog):
         browse = QPushButton('Browse…'); browse.clicked.connect(self.browse)
         line = QHBoxLayout(); line.setSpacing(10); line.addWidget(self.destination); line.addWidget(browse)
         form.addRow('Download folder', line); download_rows.append(line)
-        self.start_button = QPushButton('Download selected depot'); self.start_button.clicked.connect(self.download)
+        self.start_button = QPushButton('Download selected depot'); self.start_button.clicked.connect(self.prepare_download)
         form.addRow(self.start_button)
         self.log = QPlainTextEdit(); self.log.setReadOnly(True); form.addRow(self.log)
         self.response = QLineEdit(); self.response.setEchoMode(QLineEdit.EchoMode.Password)
@@ -184,6 +190,12 @@ class DownloadDialog(QDialog):
             form.insertRow(4,card)
             label = form.labelForField(self.depot)
             if label: label.setText('Platform / content')
+            self.dlc_list = QListWidget()
+            self.dlc_list.setMaximumHeight(170)
+            self.dlc_note = QLabel('DLC information loads from Steam when you select a game.')
+            self.dlc_note.setWordWrap(True)
+            form.insertRow(form.getWidgetPosition(self.depot)[0]+1, 'Optional DLC', self.dlc_list)
+            form.insertRow(form.getWidgetPosition(self.dlc_list)[0]+1, self.dlc_note)
             self.depot.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
             self.depot.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
             self.start_button.setText('Download')
@@ -225,6 +237,7 @@ class DownloadDialog(QDialog):
             form.addRow(completed)
             self.status.setText('')
             self.depot.currentIndexChanged.connect(self.update_depot_details)
+            self.depot.currentIndexChanged.connect(self.update_dlc_list)
             self.auto_started = False
             self.start_button.setEnabled(False)
 
@@ -352,7 +365,9 @@ class DownloadDialog(QDialog):
         self.search_timer.stop()
         self.appid.setText(str(row['id']))
         self.search_results.clear(); self.search_results.hide()
-        self.rows = []; self.depot.clear()
+        self.rows = []; self.content_info = None; self.content_plan = []; self.depot.clear()
+        if not self.authentication:
+            self.dlc_list.clear(); self.dlc_note.setText('Loading Steam content information…')
         self.game_name = row['name']
         if hasattr(self,'search_picker'):self.search_picker.accept()
         if not self.authentication:
@@ -391,11 +406,15 @@ class DownloadDialog(QDialog):
             CredentialDialog(name,self.network,self).exec()
 
     def update_depot_details(self):
-        index=self.depot.currentIndex()
-        if index >= 0 and index < len(self.rows):
-            row=self.rows[index]
-            self.depot.setToolTip(f'Depot {row.id} · Manifest {row.manifest}')
-            if not self.authentication:self.depot_info.setText(self.depot.toolTip())
+        if not self.authentication and self.content_info:
+            from .app_info import build_plan
+            try:
+                plan=build_plan(self.content_info,{self.pack_app:self.rows},self.depot.currentData(),set())
+                self.depot_info.setText('Base-game depots: '+', '.join(str(row.id) for _,row,_ in plan))
+            except ValueError as error:
+                self.depot_info.setText(str(error))
+            self.depot.setToolTip(self.depot_info.text())
+
 
     def showEvent(self,event):
         super().showEvent(event)
@@ -454,17 +473,22 @@ class DownloadDialog(QDialog):
         folder = QFileDialog.getExistingDirectory(self, 'Select empty download folder', self.destination.text())
         if folder: self.destination.setText(folder)
 
+    def set_content_enabled(self, enabled):
+        if self.authentication: return
+        for control in (self.appid,self.provider,self.depot,self.destination,self.dlc_list):
+            control.setEnabled(enabled)
+
     def task(self, operation, completed, progress=False):
         if self.busy: return
         from .plugin import Job
-        self.busy = True; self.fetch.setEnabled(False); self.start_button.setEnabled(False)
+        self.busy = True; self.set_content_enabled(False); self.fetch.setEnabled(False); self.start_button.setEnabled(False)
         result = []
         def work():
             result.append(operation(job.signals.progress.emit) if progress else operation())
             return 'Done.'
         job = Job(work); self.jobs.add(job)
         def done(message):
-            self.busy = False; self.jobs.discard(job)
+            self.busy = False; self.set_content_enabled(True); self.jobs.discard(job)
             if getattr(self,'vpn_connecting',False):
                 self.vpn_connecting=False;self.cancel.setText('Close')
             self.fetch.setEnabled(True); self.start_button.setEnabled(bool(self.authentication or self.rows))
@@ -485,26 +509,89 @@ class DownloadDialog(QDialog):
         try:
             app = int(self.appid.text())
             source = self.provider.currentText()
-            credential = self.key.text() if source == 'Hubcap' else ''
+            username = self.username.text().strip()
         except Exception as error:
             self.status.setText(str(error)); return
-        def done(rows):
+        self.rows=[]; self.content_info=None; self.content_plan=[]
+        if not self.authentication:
+            self.dlc_list.clear(); self.dlc_note.setText('Loading Steam content information…')
+        def operation():
+            from .app_info import fetch_app_info
+            info = fetch_app_info(self.network, app, username)
+            credential = self.moon.token() if source == 'Luie' else (HubcapKeyWallet().read() or {}).get('key','') if source == 'Hubcap' else ''
+            return self.transport.fetch(source, app, credential), info
+        def done(result):
+            rows, info = result
             QSettings('Playlite','SteamDownloader').setValue('manifest_provider',source)
             if source == 'Hubcap': self.network.hubcap_confirmed = True
-            self.rows = rows; self.pack_app = app
-            self.depot.clear()
-            for row in rows:
-                name=row.name.lower()
-                label = 'Linux' if 'linux' in name else 'macOS' if 'osx' in name or 'macos' in name else 'Windows' if 'windows' in name else row.name or 'Game files'
-                self.depot.addItem(label)
-            preferred=next((i for i,row in enumerate(rows) if 'linux' in row.name.lower()),0)
-            self.depot.setCurrentIndex(preferred)
-            self.update_depot_details()
-            self.status.setText('Ready to download.' if self.authentication else '')
-            if not self.authentication:
-                self.start_button.setEnabled(bool(rows))
-                self.progress_info.setText('Ready to download')
-        self.task(lambda: self.transport.fetch(source, app, self.moon.token() if source == 'Luie' else (HubcapKeyWallet().read() or {}).get('key', '') if source == 'Hubcap' else credential), done)
+            self.rows = rows; self.pack_app = app; self.content_info = info
+            self.pack_source = source
+            self.depot.blockSignals(True); self.depot.clear()
+            from .app_info import content_depots, matches_platform
+            advertised={os.strip() for row in content_depots(info).values() for os in str(row.get('config',{}).get('oslist','')).split(',') if os.strip()}
+            for platform, label in (('linux','Linux'),('windows','Windows'),('macos','macOS')):
+                if (not advertised or platform in advertised) and any(matches_platform(row,platform) for row in content_depots(info).values()):
+                    self.depot.addItem(label,platform)
+            self.depot.blockSignals(False)
+            self.update_depot_details(); self.update_dlc_list()
+            self.status.setText('')
+            self.start_button.setEnabled(bool(rows) and self.depot.count()>0)
+            self.progress_info.setText('Ready to download base game and selected DLC')
+        self.task(operation, done)
+
+    def update_dlc_list(self, *_):
+        if self.authentication or not self.content_info: return
+        from .app_info import content_depots, matches_platform
+        selected = {self.dlc_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.dlc_list.count()) if self.dlc_list.item(i).checkState()==Qt.CheckState.Checked}
+        self.dlc_list.clear()
+        platform = self.depot.currentData()
+        for entry in self.content_info['dlc']:
+            depots = content_depots(self.content_info,entry)
+            applicable = any(matches_platform(row,platform) for row in depots.values())
+            reason = 'Included in base-game files' if not depots else 'Unavailable for this platform' if not applicable else ''
+            item=QListWidgetItem(entry['name'] or f'DLC {entry["id"]}')
+            item.setData(Qt.ItemDataRole.UserRole,entry['id'])
+            item.setToolTip(reason or 'Download this DLC with the base game. Manifest availability is checked before downloading.')
+            if reason:
+                item.setText(item.text()+' · '+reason)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            else:
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked if entry['id'] in selected else Qt.CheckState.Unchecked)
+            self.dlc_list.addItem(item)
+        self.dlc_list.setVisible(bool(self.content_info['dlc']))
+        self.dlc_note.setText('Select optional DLC. Base-game files are always included.' if self.content_info['dlc'] else 'Steam lists no DLC for this game.')
+
+    def prepare_download(self):
+        if self.authentication: return self.download()
+        if self.busy: return
+        try:
+            if not self.content_info or int(self.appid.text()) != self.pack_app:
+                raise ValueError('Choose a game and load its content information first.')
+            if not self.destination.text(): raise ValueError('Choose a download folder.')
+            destination=Path(self.destination.text()).expanduser().resolve()
+            if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
+                raise ValueError('Choose an empty download folder.')
+            info=self.content_info; source=self.pack_source; platform=self.depot.currentData()
+            selected={self.dlc_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.dlc_list.count()) if self.dlc_list.item(i).checkState()==Qt.CheckState.Checked}
+            packs={self.pack_app:list(self.rows)}
+        except Exception as error:
+            self.status.setText(str(error)); return
+        def operation():
+            from .app_info import build_plan, content_depots, matches_platform
+            credential=self.moon.token() if source=='Luie' else (HubcapKeyWallet().read() or {}).get('key','') if source=='Hubcap' else ''
+            available={row.id for row in packs[self.pack_app]}
+            for entry in info['dlc']:
+                if entry['id'] not in selected: continue
+                required={key for key,row in content_depots(info,entry).items() if matches_platform(row,platform)}
+                if required-available:
+                    packs[entry['id']]=self.transport.fetch(source,entry['id'],credential)
+            return build_plan(info,packs,platform,selected)
+        def done(plan):
+            self.content_plan=plan; self.content_index=0
+            self.total_downloaded=0; self.total_uncompressed=0; self.batch_started_at=time.monotonic()
+            self.download()
+        self.task(operation,done)
 
     def download(self):
         if self.busy: return
@@ -527,6 +614,8 @@ class DownloadDialog(QDialog):
                 destination = Path(self.destination.text()).expanduser().resolve()
             if not self.username.text().strip(): raise ValueError('Enter your Steam account name.')
             row = self.rows[self.depot.currentIndex()] if not self.authentication else None
+            if not self.authentication and self.content_plan:
+                app,row,content_name=self.content_plan[self.content_index]
             self.temporary = tempfile.TemporaryDirectory(prefix='playlite-depot-input-')
             pack = None
             if row is not None:
@@ -547,7 +636,10 @@ class DownloadDialog(QDialog):
                 stage=Path(self.temporary.name)/'output';stage.mkdir(mode=0o777);stage.chmod(0o777)
             else:
                 from .download_flow import prepare_destination
-                destination,stage=prepare_destination(destination)
+                if self.content_plan and self.content_index>0:
+                    destination,stage=self.download_destination,self.download_staging
+                else:
+                    destination,stage=prepare_destination(destination)
                 self.download_destination=destination;self.download_staging=stage
             args = worker_args(self.network, Request(app, row.id, row.manifest) if row is not None else Request(1, 1), stage, pack=pack, username=self.username.text())
             args[args.index('--workdir') + 1] = '/auth'
@@ -572,11 +664,12 @@ class DownloadDialog(QDialog):
             if self.authentication == 'steam': self.pending_password = ''
             self.status.setText(str(error)); return
         QSettings('Playlite', 'SteamDownloader').setValue('steam_account', self.username.text().strip())
-        self.busy = True; self.fetch.setEnabled(False); self.start_button.setEnabled(False)
+        self.busy = True; self.set_content_enabled(False); self.fetch.setEnabled(False); self.start_button.setEnabled(False)
         self.cancel.setText('Cancel login' if self.authentication else 'Cancel download')
         self.output = ''; self.auth_needed = False; self.log.clear()
         self.started_at=time.monotonic()
         if not self.authentication:
+            self.progress_bar.setFormat(f'Part {self.content_index+1}/{len(self.content_plan)} · %p%' if len(self.content_plan)>1 else '%p%')
             self.progress_bar.setRange(0,0);self.progress_info.setText('Connecting to Steam…')
             self.open_folder.setEnabled(False);self.add_library.setEnabled(False)
         self.process = QProcess(self)
@@ -585,7 +678,7 @@ class DownloadDialog(QDialog):
         self.process.finished.connect(self.finished)
         self.process.errorOccurred.connect(self.process_error)
         self.process.start('docker', args)
-        self.status.setText('Signing in to Steam…' if self.authentication else 'Downloading…')
+        self.status.setText('Signing in to Steam…' if self.authentication else f'Downloading {content_name} · Part {self.content_index+1} of {len(self.content_plan)}' if self.content_plan else 'Downloading…')
 
     def read_output(self):
         text = bytes(self.process.readAllStandardOutput()).decode('utf-8', errors='replace')
@@ -648,6 +741,7 @@ class DownloadDialog(QDialog):
 
     def finished(self, code, *_):
         self.read_output()
+        continue_download = False
         try:
             if self.authentication:
                 if code: raise RuntimeError('Steam authentication failed or was cancelled. See the login log.')
@@ -656,14 +750,21 @@ class DownloadDialog(QDialog):
                 self.status.setText('Steam authentication completed.')
             else:
                 require_download_success(code, self.output)
-                from .download_flow import finalize_download
-                finalize_download(self.download_destination,self.download_staging)
-                self.progress_bar.setRange(0,1000);self.progress_bar.setValue(1000)
                 totals=re.findall(r'Total downloaded: (\d+) bytes \((\d+) bytes uncompressed\)',self.output)
-                elapsed=max(.1,time.monotonic()-self.started_at)
-                self.progress_info.setText(f'{int(totals[-1][1])/1000000:.1f} MB · {int(totals[-1][0])/elapsed/1000000:.1f} MB/s average' if totals else 'Files validated')
-                self.status.setText('Download complete. Files are ready in your chosen folder.')
-                self.open_folder.setEnabled(True);self.add_library.setEnabled(True)
+                if totals:
+                    self.total_downloaded+=int(totals[-1][0]); self.total_uncompressed+=int(totals[-1][1])
+                from .download_flow import finalize_download
+                if self.content_plan and self.content_index+1 < len(self.content_plan):
+                    self.content_index += 1
+                    continue_download = True
+                else:
+                    finalize_download(self.download_destination,self.download_staging)
+                    continue_download = False
+                if continue_download:
+                    self.status.setText(f'Validated content {self.content_index} of {len(self.content_plan)}.')
+                else:
+                    self.complete_download()
+
         except Exception as error:
             self.status.setText(str(error) + ('' if self.authentication else ' Incomplete files remain in staging.'))
             if not self.authentication:
@@ -679,7 +780,7 @@ class DownloadDialog(QDialog):
                 self.status.setText(self.status.text() + ' Steam login could not be saved in KWallet.')
             finally:
                 self.temporary.cleanup(); self.temporary = None
-        self.busy = False; self.fetch.setEnabled(True); self.start_button.setEnabled(True)
+        self.busy = False; self.set_content_enabled(True); self.fetch.setEnabled(True); self.start_button.setEnabled(True)
         self.cancel.setText('Close')
         if self.authentication == 'steam':
             self.pending_password = ''
@@ -694,8 +795,19 @@ class DownloadDialog(QDialog):
             else:
                 self.start_button.setText('Try again')
 
+        if continue_download:
+            self.download()
+
         if getattr(self, 'auth_needed', False):
             self.status.setText('Steam requires a new login. Open plugin settings → Steam login and sign in again. Incomplete files were retained.')
+
+    def complete_download(self):
+        self.progress_bar.setFormat('%p%')
+        self.progress_bar.setRange(0,1000);self.progress_bar.setValue(1000)
+        elapsed=max(.1,time.monotonic()-(self.batch_started_at or self.started_at))
+        self.progress_info.setText(f'{self.total_uncompressed/1000000:.1f} MB · {self.total_downloaded/elapsed/1000000:.1f} MB/s average' if self.total_uncompressed else 'Files validated')
+        self.status.setText('Download complete. Files are ready in your chosen folder.')
+        self.open_folder.setEnabled(True);self.add_library.setEnabled(True)
 
     def forget_steam(self):
         if self.busy: return

@@ -1,0 +1,155 @@
+import copy
+import unittest
+from unittest.mock import Mock, patch
+import test_worker
+from downloader.app_info import build_plan, validate_info, content_depots, fetch_app_info
+from downloader.providers import Depot
+
+
+def depot(os='',dlc=None):
+    row={'config':{'oslist':os},'manifests':{'public':{'gid':'1'}}}
+    if dlc:row['dlcappid']=str(dlc)
+    return row
+
+
+def fixture():
+    return {'game':{'id':10,'name':'Game','owned':True,'depots':{'11':depot(),'12':depot('linux'),'13':depot('windows'),'21':depot('linux',20)}},
+            'dlc':[{'id':20,'name':'Expansion','owned':True,'depots':{}},{'id':30,'name':'Bundled DLC','owned':True,'depots':{}},{'id':40,'name':'Unowned','owned':False,'depots':{'41':depot('linux')}}]}
+
+
+class ContentTests(unittest.TestCase):
+    def setUp(self):
+        self.info=fixture()
+        self.packs={10:[Depot(i,1,b'manifest') for i in (11,12,13,21)]}
+
+    def test_base_game_contains_common_and_matching_platform_only(self):
+        self.assertEqual([row.id for _,row,_ in build_plan(self.info,self.packs,'linux',set())],[11,12])
+
+    def test_selected_expansion_is_included_once(self):
+        self.info['dlc'][0]['depots']={'21':depot('linux')}
+        self.assertEqual([(app,row.id) for app,row,_ in build_plan(self.info,self.packs,'linux',{20})],[(10,11),(10,12),(20,21)])
+
+    def test_missing_manifest_aborts_entire_plan(self):
+        self.packs[10]=self.packs[10][:3]
+        with self.assertRaisesRegex(ValueError,'missing depot 21'):
+            build_plan(self.info,self.packs,'linux',{20})
+        self.packs[20]=[Depot(21,1,b'manifest')]
+        self.assertEqual(len(build_plan(self.info,self.packs,'linux',{20})),3)
+
+    def test_unknown_dlc_is_rejected_but_package_ownership_is_not_a_gate(self):
+        with self.assertRaises(ValueError):build_plan(self.info,self.packs,'linux',{999})
+        self.info['game']['owned']=False
+        self.packs[40]=[Depot(41,1,b'manifest')]
+        self.assertEqual(len(build_plan(self.info,self.packs,'linux',{40})),3)
+
+    def test_language_and_architecture_filter(self):
+        self.info['game']['depots']['14']=depot('linux')
+        self.info['game']['depots']['14']['config']['language']='german'
+        self.info['game']['depots']['15']=depot('linux')
+        self.info['game']['depots']['15']['config']['osarch']='32'
+        self.assertEqual(len(build_plan(self.info,self.packs,'linux',set())),2)
+
+    def test_shared_depot_and_virtual_dlc(self):
+        self.info['game']['depots']['11']={'depotfromapp':'100'}
+        self.info['game']['depots']['31']={'dlcappid':'30'}
+        self.assertEqual(content_depots(self.info,self.info['dlc'][1]),{})
+        self.assertEqual(len(build_plan(self.info,self.packs,'linux',set())),2)
+
+    def test_wrong_app_duplicate_and_oversized_metadata_rejected(self):
+        validate_info(self.info,10)
+        for change in ('app','duplicate','many'):
+            info=copy.deepcopy(self.info)
+            if change=='app': info['game']['id']=11
+            if change=='duplicate': info['dlc'].append(info['dlc'][0])
+            if change=='many': info['dlc']=info['dlc']*101
+            with self.assertRaises(ValueError):validate_info(info,10)
+
+    def test_metadata_does_not_start_worker_without_saved_authentication(self):
+        network=Mock()
+        with patch('downloader.app_info.SteamSessionWallet') as wallet,patch('downloader.app_info.subprocess.run') as run:
+            wallet.return_value.read.return_value=None
+            with self.assertRaises(ValueError):fetch_app_info(network,10,'account')
+            run.assert_not_called()
+
+class ChecklistTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from PyQt6.QtWidgets import QApplication
+        cls.app=QApplication.instance() or QApplication([])
+
+    def dialog(self):
+        from downloader.download_dialog import DownloadDialog
+        dialog=DownloadDialog(Mock())
+        dialog.content_info=fixture(); dialog.pack_app=10
+        dialog.rows=[Depot(i,1,b'manifest') for i in (11,12,13,21)]
+        dialog.depot.addItem('Linux','linux'); dialog.update_dlc_list()
+        return dialog
+
+    def test_separate_dlc_is_checkable_and_bundled_dlc_explained(self):
+        from PyQt6.QtCore import Qt
+        dialog=self.dialog()
+        self.assertTrue(dialog.dlc_list.item(0).flags() & Qt.ItemFlag.ItemIsUserCheckable)
+        self.assertEqual(dialog.dlc_list.item(0).checkState(),Qt.CheckState.Unchecked)
+        self.assertIn('Included in base-game files',dialog.dlc_list.item(1).text())
+        self.assertFalse(dialog.dlc_list.item(1).flags() & Qt.ItemFlag.ItemIsEnabled)
+        self.assertTrue(dialog.dlc_list.item(2).flags() & Qt.ItemFlag.ItemIsUserCheckable)
+        dialog.close()
+
+    def test_intermediate_success_does_not_publish_and_final_success_does(self):
+        import tempfile
+        from pathlib import Path
+        dialog=self.dialog()
+        dialog.content_plan=[(10,dialog.rows[0],'Base'),(20,dialog.rows[-1],'Expansion')]
+        dialog.process=Mock();dialog.process.readAllStandardOutput.return_value=b''
+        dialog.read_output=Mock();dialog.download=Mock()
+        dialog.output='Total downloaded: 100 bytes (200 bytes uncompressed) from 1 depots'
+        dialog.started_at=0
+        with tempfile.TemporaryDirectory() as directory:
+            dialog.download_destination=Path(directory)
+            dialog.download_staging=Path(directory)/'.playlite-download';dialog.download_staging.mkdir()
+            (dialog.download_staging/'base.txt').write_text('base')
+            dialog.finished(0)
+            dialog.download.assert_called_once()
+            self.assertFalse((Path(directory)/'base.txt').exists())
+            self.assertFalse(dialog.open_folder.isEnabled())
+            (dialog.download_staging/'dlc.txt').write_text('dlc')
+            dialog.finished(0)
+            self.assertTrue((Path(directory)/'base.txt').exists())
+            self.assertTrue((Path(directory)/'dlc.txt').exists())
+            self.assertFalse(dialog.download_staging.exists())
+            self.assertTrue(dialog.open_folder.isEnabled())
+        dialog.process=None;dialog.close()
+
+    def test_failed_content_stops_queue_and_retains_staging(self):
+        import tempfile
+        from pathlib import Path
+        dialog=self.dialog();dialog.content_plan=[(10,dialog.rows[0],'Base'),(20,dialog.rows[-1],'Expansion')]
+        dialog.read_output=Mock();dialog.download=Mock();dialog.output='result: AccessDenied'
+        with tempfile.TemporaryDirectory() as directory:
+            dialog.download_destination=Path(directory)
+            dialog.download_staging=Path(directory)/'.playlite-download';dialog.download_staging.mkdir()
+            (dialog.download_staging/'partial.txt').write_text('partial')
+            dialog.finished(1)
+            dialog.download.assert_not_called()
+            self.assertTrue((dialog.download_staging/'partial.txt').exists())
+            self.assertFalse(dialog.open_folder.isEnabled())
+        dialog.close()
+
+class MetadataOutputTests(unittest.TestCase):
+    def test_interactive_challenge_does_not_wait_for_input(self):
+        import sys
+        from downloader.app_info import metadata_output
+        with self.assertRaisesRegex(ValueError,'requires authentication'):
+            metadata_output([sys.executable,'-c',"print('STEAM GUARD! Please enter the auth code sent to email:',flush=True);import time;time.sleep(10)"],timeout=1)
+
+    def test_output_limit_is_enforced(self):
+        import sys
+        from downloader.app_info import metadata_output
+        with self.assertRaisesRegex(ValueError,'size limit'):
+            metadata_output([sys.executable,'-c',"print('x'*10000)"],limit=100)
+
+    def test_metadata_worker_has_finite_deadline(self):
+        import sys
+        from downloader.app_info import metadata_output
+        with self.assertRaisesRegex(RuntimeError,'timed out'):
+            metadata_output([sys.executable,'-c','import time;time.sleep(10)'],timeout=.1)

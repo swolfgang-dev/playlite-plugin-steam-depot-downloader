@@ -57,6 +57,8 @@ def main():
             telemetry = 'Console.WriteLine("PLAYLITE_PROGRESS {0} {1} {2}", ' + amount + ', depotDownloadCounter.completeDownloadSize, depotDownloadCounter.depotBytesCompressed);'
             text = text.replace(marker, marker + '\n                ' + telemetry)
     downloader.write_text(text)
+    from appinfo_patch import apply
+    apply(source)
     context = work / 'image'
     context.mkdir(exist_ok=True)
     shutil.copyfile(Path(__file__).parent / 'worker' / 'Dockerfile', context / 'Dockerfile')
