@@ -37,7 +37,7 @@ class GameSearch:
         if app in self.cache: return self.cache[app]
         if type(app) != int or not 0 < app < 2**32: raise ValueError('Invalid Steam App ID.')
         data=b''
-        for asset in ('library_600x900.jpg','header.jpg'):
+        for asset in ('library_600x900.jpg','capsule_231x87.jpg','header.jpg'):
             try:
                 candidate=self.transport.request(f'https://cdn.cloudflare.steamstatic.com/steam/apps/{app}/{asset}')
                 if candidate and len(candidate)<=MAX_COVER_BYTES:

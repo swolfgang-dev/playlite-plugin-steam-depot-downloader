@@ -39,7 +39,14 @@ class SearchTests(unittest.TestCase):
 
     def test_missing_library_art_falls_back_to_header(self):
         transport=Mock()
-        transport.request.side_effect=[RuntimeError('Missing cover'),b'header']
+        transport.request.side_effect=[RuntimeError('Missing cover'),RuntimeError('Missing capsule'),b'header']
         self.assertEqual(GameSearch(transport).cover(123),b'header')
         self.assertIn('header.jpg',transport.request.call_args.args[0])
+        self.assertEqual(transport.request.call_count,3)
+
+    def test_capsule_is_preferred_to_header(self):
+        transport=Mock()
+        transport.request.side_effect=[RuntimeError('Missing cover'),b'capsule']
+        self.assertEqual(GameSearch(transport).cover(123),b'capsule')
+        self.assertIn('capsule_231x87.jpg',transport.request.call_args.args[0])
         self.assertEqual(transport.request.call_count,2)
