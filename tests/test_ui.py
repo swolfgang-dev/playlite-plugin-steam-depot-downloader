@@ -277,3 +277,25 @@ class CleanDownloaderTests(unittest.TestCase):
         self.assertIn('MB/s',dialog.progress_info.text())
         self.assertFalse(dialog.log.isVisible())
         dialog.process=None;dialog.close()
+
+class SearchPickerTests(unittest.TestCase):
+    def test_search_opens_separate_picker_and_selection_returns_app_id(self):
+        from downloader.download_dialog import DownloadDialog
+        from unittest.mock import Mock
+        from PyQt6.QtWidgets import QListWidgetItem
+        from PyQt6.QtCore import Qt
+        app=QApplication.instance() or QApplication([])
+        dialog=DownloadDialog(Mock())
+        with patch.object(dialog,'search_games'):
+            dialog.open_search()
+        app.processEvents()
+        self.assertTrue(dialog.search_picker.isVisible())
+        self.assertIs(dialog.search_results.parentWidget(),dialog.search_picker)
+        item=QListWidgetItem('Baba Is You')
+        item.setData(Qt.ItemDataRole.UserRole,{'id':736260,'name':'Baba Is You'})
+        dialog.search_results.addItem(item)
+        with patch.object(dialog,'fetch_pack'),patch.object(dialog,'load_selected_cover'):
+            dialog.select_game(item)
+        self.assertEqual(dialog.appid.text(),'736260')
+        self.assertFalse(dialog.search_picker.isVisible())
+        dialog.close()

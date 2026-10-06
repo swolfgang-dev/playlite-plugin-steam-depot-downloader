@@ -41,7 +41,7 @@ class DownloadDialog(QDialog):
         self.appid = QLineEdit('736260')
         self.appid.setPlaceholderText('Steam App ID or game name')
         search_button = QPushButton('Search')
-        search_button.clicked.connect(self.search_games)
+        search_button.clicked.connect(self.open_search)
         search_line = QHBoxLayout(); search_line.setSpacing(10)
         search_line.addWidget(self.appid); search_line.addWidget(search_button)
         form.addRow('Game / App ID', search_line); download_rows.append(search_line)
@@ -59,8 +59,7 @@ class DownloadDialog(QDialog):
         self.search_timer = QTimer(self); self.search_timer.setSingleShot(True)
         self.search_timer.setInterval(650)
         self.search_timer.timeout.connect(self.search_games)
-        self.appid.textEdited.connect(self.queue_search)
-        self.appid.returnPressed.connect(self.search_games)
+        self.appid.returnPressed.connect(self.open_search)
         self.search_generation = 0
         self.searching = False
         self.search_items = {}
@@ -230,16 +229,62 @@ class DownloadDialog(QDialog):
             self.start_button.setEnabled(False)
 
 
+    def open_search(self):
+        if self.authentication or self.busy:return
+        if not hasattr(self,'search_picker'):
+            self.search_picker=QDialog(self)
+            self.search_picker.setWindowTitle('Find a Steam game — Playlite')
+            self.search_picker.resize(620,510)
+            layout=QVBoxLayout(self.search_picker)
+            self.picker_query=QLineEdit()
+            self.picker_query.setPlaceholderText('Game name or Steam App ID')
+            button=QPushButton('Search')
+            button.clicked.connect(self.search_games)
+            line=QHBoxLayout();line.setSpacing(10)
+            line.addWidget(self.picker_query);line.addWidget(button)
+            layout.addLayout(line)
+            self.main_form.takeRow(self.search_results)
+            self.search_results.setMaximumHeight(16777215)
+            layout.addWidget(self.search_results,1)
+            self.picker_status=QLabel('Enter at least three characters to search.')
+            self.picker_status.setWordWrap(True);layout.addWidget(self.picker_status)
+            footer=QHBoxLayout();footer.setSpacing(10);footer.addStretch()
+            select=QPushButton('Select game')
+            def select_current():
+                item=self.search_results.currentItem()
+                if item:self.select_game(item)
+            select.clicked.connect(select_current)
+            close=QPushButton('Cancel');close.clicked.connect(self.search_picker.reject)
+            footer.addWidget(select);footer.addWidget(close);layout.addLayout(footer)
+            self.picker_query.textEdited.connect(self.queue_search)
+            self.picker_query.returnPressed.connect(self.search_games)
+            self.search_results.itemClicked.disconnect(self.select_game)
+            def finished(result):
+                self.search_timer.stop()
+                if not result:self.search_generation+=1
+            self.search_picker.finished.connect(finished)
+        self.picker_query.setText(self.appid.text())
+        self.search_picker.open()
+        self.picker_query.setFocus();self.picker_query.selectAll()
+        self.search_results.show()
+        if not self.picker_query.text().strip().isdecimal():self.search_games()
+
+    def current_search_query(self):
+        if hasattr(self,'search_picker') and self.search_picker.isVisible():
+            return self.picker_query.text().strip()
+        return self.appid.text().strip()
+
     def queue_search(self, query):
         self.search_generation += 1
         self.search_timer.stop()
-        self.search_results.clear(); self.search_results.hide()
+        self.search_results.clear()
+        self.search_results.setVisible(hasattr(self,'search_picker') and self.search_picker.isVisible())
         self.rows=[];self.depot.clear();self.start_button.setEnabled(False)
         if len(query.strip()) >= 3 and not query.strip().isdecimal():
             self.search_timer.start()
 
     def search_games(self):
-        query = self.appid.text().strip()
+        query = self.current_search_query()
         if self.authentication or self.busy: return
         if query.isdecimal():
             self.task(lambda: self.game_search.details(int(query)), self.choose_game)
@@ -258,9 +303,11 @@ class DownloadDialog(QDialog):
         job = Job(operation); self.jobs.add(job)
         def done(message):
             self.jobs.discard(job); self.searching = False
-            if generation != self.search_generation or query != self.appid.text().strip(): return
+            if generation != self.search_generation or query != self.current_search_query(): return
             if message:
-                self.status.setText(message); return
+                self.status.setText(message)
+                if hasattr(self,'picker_status'):self.picker_status.setText(message)
+                return
             self.search_results.clear(); self.search_items = {}
             for row in result:
                 item = QListWidgetItem(f"{row['name']}\nApp ID: {row['id']}")
@@ -268,11 +315,13 @@ class DownloadDialog(QDialog):
                 item.setData(Qt.ItemDataRole.UserRole, row)
                 item.setSizeHint(QSize(0, 90))
                 self.search_results.addItem(item); self.search_items[row['id']] = item
-            self.search_results.setVisible(bool(result))
+            self.search_results.setVisible(True)
+            if hasattr(self,'picker_status'):self.picker_status.setText(f'{len(result)} matching games. Double-click a game or choose Select game.' if result else 'No matching games found.')
             self.status.setText(f'{len(result)} matching games. Select a game to use its App ID.' if result else 'No matching games found.')
             self.load_search_covers(result, generation)
         job.signals.finished.connect(done)
         self.status.setText('Searching Steam…')
+        if hasattr(self,'picker_status'):self.picker_status.setText('Searching Steam…')
         QThreadPool.globalInstance().start(job)
 
     def load_search_covers(self, rows, generation):
@@ -305,6 +354,7 @@ class DownloadDialog(QDialog):
         self.search_results.clear(); self.search_results.hide()
         self.rows = []; self.depot.clear()
         self.game_name = row['name']
+        if hasattr(self,'search_picker'):self.search_picker.accept()
         if not self.authentication:
             self.game_title.setText(f"<b>{__import__('html').escape(self.game_name)}</b><br>Steam App ID: {row['id']}")
             self.destination.setText(str(game_folder(self.default_root,self.game_name)))
