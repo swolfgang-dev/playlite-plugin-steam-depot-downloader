@@ -474,6 +474,13 @@ class DownloadDialog(QDialog):
             prefix_root=defaults.get('Prefix') or str(parent.data/'prefixes')
             game['Prefix']=str(suggested_wine_prefix(game['InstallDirectory'],prefix_root))
         dialog=AddGameEditor(executable,parent.data,self,game=game)
+        if game.get('Prefix'):
+            def prefill_prefix(*_):
+                field=dialog.fields.get('Prefix')
+                if field is not None and not field.text().strip():
+                    field.setText(game['Prefix'])
+            prefill_prefix()
+            dialog.installation_method.currentIndexChanged.connect(prefill_prefix)
         if dialog.exec()==QDialog.DialogCode.Accepted:
             parent.games=save_game(parent.data,parent.games,dialog.result_game)
             parent.focus_added_game(dialog.result_game['Id'])
