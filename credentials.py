@@ -1,10 +1,11 @@
 """Use KDE's encrypted wallet; never persist credentials in plugin settings."""
 import json
+from .constants import PROFILE_SUFFIX
 from PyQt6.QtCore import QVariant, QMetaType
 from PyQt6.QtDBus import QDBusConnection, QDBusInterface
 
-APP = 'Playlite Steam Depot Downloader'
-FOLDER = 'Playlite Steam Downloader'
+APP = 'Playlite Steam Depot Downloader' + PROFILE_SUFFIX
+FOLDER = 'Playlite Steam Downloader' + PROFILE_SUFFIX
 ENTRY = 'NordVPN service credentials'
 
 

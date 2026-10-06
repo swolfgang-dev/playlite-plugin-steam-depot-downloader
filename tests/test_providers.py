@@ -188,7 +188,7 @@ class SeparatedWorkflowTests(unittest.TestCase):
 
     def test_plugin_exposes_main_menu_action(self):
         from downloader.plugin import Plugin
-        self.assertEqual(Plugin().main_menu_actions(Mock())[0][0],'Steam Depot Downloader…')
+        self.assertEqual(Plugin().main_menu_actions(Mock())[0][0],'Steam Downloader…')
 
 class LuaOnlyTests(unittest.TestCase):
     def test_plain_lua_pins_and_keys_are_data_without_binary_manifest(self):

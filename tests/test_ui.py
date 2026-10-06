@@ -85,8 +85,8 @@ class AuthenticationLayoutTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         with patch('downloader.credentials.MoonSessionWallet.read', return_value=None):
             widget = Plugin().create_settings()
-        self.assertEqual(list(widget.auth_status), ['Steam', 'Moon', 'Hubcap'])
-        self.assertEqual(widget.auth_status['Moon'].text(), 'Not signed in')
+        self.assertFalse(hasattr(widget, 'auth_status'))
+        self.assertIn('Isolated Steam', ' '.join(label.text() for label in widget.findChildren(QLabel)))
         self.assertFalse(hasattr(widget, 'password'))
 
     def test_steam_popup_only_shows_steam_authentication(self):
@@ -177,6 +177,10 @@ class AutoConnectTests(unittest.TestCase):
         dialog.close()
 
 class SettingsCloseTests(UiTests):
+    def setUp(self):
+        super().setUp()
+        preferences=patch('downloader.vpn_lifecycle.session_preferences',return_value=(False,False))
+        preferences.start();self.addCleanup(preferences.stop)
     def test_close_disconnects_and_preserves_credentials(self):
         from PyQt6.QtWidgets import QDialog
         plugin = Plugin()

@@ -6,7 +6,7 @@ RUN mkdir -p /home/steam /library /control && chown 65534:65534 /home/steam /lib
 ADD https://raw.githubusercontent.com/swwayps/luatools-moon/2c739b5349a972bb1932ac9457b0acf91b09e044/install.sh /opt/moon-install.sh
 ADD https://raw.githubusercontent.com/swwayps/luatools-moon/2c739b5349a972bb1932ac9457b0acf91b09e044/LICENSE /opt/MOON-LICENSE
 RUN echo "1c6896832d32d6d17c5635daf95b539763955f7ea1d9bd4446e24c2e8a5806c2  /opt/moon-install.sh" | sha256sum -c - && chmod 644 /opt/moon-install.sh /opt/MOON-LICENSE
-COPY bridge.py setup_moon.py moon_bridge.lua steam_control.lua /opt/
+COPY bridge.py setup_moon.py moon_bridge.lua steam_control.lua retail_selection.py provider_limits.py /opt/
 ENV HOME=/home/steam DISPLAY=:1 XDG_CONFIG_HOME=/home/steam/.config XDG_DATA_HOME=/home/steam/.local/share
 USER 65534:65534
 ENTRYPOINT ["python3", "/opt/bridge.py"]

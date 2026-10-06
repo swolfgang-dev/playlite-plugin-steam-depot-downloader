@@ -1,3 +1,35 @@
+# Steam Downloader
+
+## Install and get started
+
+Install [Playlite 0.2.41 or later](https://github.com/swolfgang-dev/Playlite/releases/latest) by downloading `install.sh` and running `bash install.sh` from a normal terminal without sudo. On first launch, open the **Plugins** tab in **Get started**, select **Steam Downloader**, and click **Install selected plugins**. You can also install it through **Settings → Plugins → Available**.
+
+Installation opens the isolated Steam setup window. Steam setup requires an x86-64 Linux host, a running Docker daemon accessible to your user, `socat`, enabled user namespaces, NordVPN service credentials, and internet access. These host dependencies must already be installed; the setup button builds the private Steam desktop and installs LuaMoon inside it.
+
+1. Authenticate NordVPN, then click **Set up isolated Steam**.
+2. Open the private desktop and sign into Steam and LuaMoon/providers there.
+3. Restart Playlite to load the newly installed plugin.
+4. Open **Playlite menu → Steam Downloader…**, search for your game, choose its platform (Windows by default), language and destination, then add it to Downloads.
+
+Progress appears in the downloader log and Downloads panel. Downloads support pause, cancel and retry, and history remains across sessions until cleared. Successfully exported game files remain in your selected destination; the private source copy is removed after export verification. Host Steam is not used.
+
+## Remove
+
+Use **Settings → Plugins → Installed → Delete selected**. Steam Downloader offers optional removal of its owned Steam environment and private data/logins. Exported game folders, host Steam, Docker, and shared dependencies are retained. Resources created before ownership tracking are preserved.
+
+The rest of this document records earlier development work and experimental depot-download paths. The supported release flow is the isolated Steam workflow above.
+
+
+The current download flow uses an isolated Steam client with LuaMoon. In plugin settings, authenticate NordVPN, choose your default download location, and press **Set up isolated Steam**. Setup checks Docker access and Linux user namespaces, builds or updates the container image, connects the saved VPN credentials, bootstraps Steam, installs LuaMoon, and opens the private desktop. Steam and provider logins happen there and persist in the container home volume.
+
+The host needs x86-64 Linux, Docker with user access, `socat`, internet access, and sufficient storage for the image, Steam/Proton, the private library, and exported game files. First-time Steam Guard and provider authentication remain interactive. Setup displays its build and installation progress and can be retried without deleting saved sessions. It is unavailable while downloads are queued.
+
+Open **Steam Downloader** from the Playlite menu, search for a game, select Windows or Linux and optional DLC, and add it to Downloads. Store metadata supplies the chooser; Steam and LuaMoon resolve installation content and manifests inside the isolated environment. Provider credentials, depot backend selection, architecture overrides, and branch controls are no longer exposed. Games are verified by Steam before their files are copied to the selected destination. Windows is preferred when available.
+
+The sections below document the previous depot workflow and the isolation implementation for maintenance; the legacy downloader is not exposed in the current UI.
+
+---
+
 # Steam Depot Downloader — experimental isolated downloads
 
 Provides dedicated NordVPN/OpenVPN networking and an experimental Moon-compatible manifest provider plus independently authenticated Steam depot worker. It does not access host Steam, host Steam account files, or installed games. The workflow currently downloads a single selected depot into staging.
@@ -219,12 +251,38 @@ The downloader shows its live log below the download folder, with a Copy log act
 lookups, readiness checks, errors and worker output stay available across attempts.
 The selection window has no visible progress bar; download progress remains in
 the Downloads panel.
+The Downloads list is saved across Playlite sessions. Completed items remain
+until **Clear finished** is clicked. Unfinished transfers and waiting items are
+restored paused; **Resume** or **Retry** reuses their saved game, platform,
+language and destination. Partial files are retained. **Cancel** stops an item
+without deleting its files. The list orders active downloads, queued items,
+completed items, stopped/failed items, then paused items. Closing Playlite with
+unfinished downloads asks for confirmation and preserves them for resuming.
+Persistence excludes credentials, provider keys and live worker objects.
 
-Closing plugin settings or the downloader releases the isolated VPN when no
-queued or active downloads remain. Waiting and running downloads keep it alive.
-The queue automatically releases the connection when its last download completes,
-fails or is cancelled, including when the downloader window stays open.
+Steam and the isolated VPN stay active while plugin settings, the downloader,
+or the Downloads panel is open, or downloads are queued or running. They are
+released once all those windows close and the queue is idle.
+Settings offer **Keep Steam open for the Playlite session** and **Keep VPN
+connected for the Playlite session**, both off by default. Keeping Steam open
+also keeps its VPN connected. Keeping only the VPN connected stops idle Steam.
+These preferences retain an existing session; they do not start a connection.
+Manual Disconnect and Playlite exit still stop both.
+**Stop Steam environment** in settings manually releases the private desktop
+while retaining the VPN and saved login/game files, even with Keep Steam open
+enabled. Pause or cancel queued and active downloads first. Open Steam desktop
+starts it again.
+The private Openbox desktop focuses client windows only when they are not already
+focused. This avoids redundant focus events dismissing Steam dropdowns and
+context menus before their click handlers run (see
+[Valve's Linux issue](https://github.com/ValveSoftware/steam-for-linux/issues/9273#issuecomment-1766922429)).
 Authentication popups do not release the connection when closed.
+Provider responses during LuaMoon preparation also produce **API limits** log
+entries: reported daily usage/limit, remaining requests, Retry-After, and reset
+values. These are observations from existing requests, not extra quota checks.
+Providers that omit counters or cooldowns are explicitly labelled as not reporting
+them. HTTP 429 means request throttling and is not automatically called a daily
+quota exhaustion. No authentication headers, cookies, or API keys are logged.
 
 ### Experimental isolated Steam environment
 
@@ -248,8 +306,8 @@ Windows selects Proton in the isolated client to request Windows depots; Linux
 clears the per-game compatibility override. The client installs into the registered
 **Playlite downloads** library (`/library`), then verified files are copied without
 overwriting into the folder selected in the downloader. Known wrong-platform depots
-prevent completion. Queued Steam downloads keep the VPN alive, and the last completed,
-failed or cancelled item releases it.
+prevent completion. Queued Steam downloads keep the VPN alive; after the queue
+finishes, open windows and the session preferences determine when it is released.
 
 The Steam backend currently uses the public branch and Steam's automatic architecture
 selection. Choose **Depot downloader** for a custom branch, 32-bit architecture or
@@ -258,3 +316,38 @@ download its compatibility runtimes; those stay in the private library and are n
 copied into the game folder. Steam login/EULA prompts may still need attention in the
 isolated desktop. The private bridge exposes bounded actions, not arbitrary JavaScript;
 Lumen verifies the Steam debugger process before applying content selections.
+
+Download progress uses Steam's local-client download overview callback. Manifest
+counters remain a fallback when that callback is unavailable; they can lag behind
+the actual transfer. A cold client receives a bounded startup wait before its
+content API is queried. Exporting a completed game from the private default Steam
+library runs asynchronously and reports copied bytes, keeping client-status
+requests responsive until the files are ready. Older running bridges receive a
+longer status timeout during an upgrade so their synchronous copy can finish.
+
+Before a queued installation, Playlite obtains public retail package IDs from the
+Steam store and queries their depot membership through the isolated client's native
+console. Base-game depot entries outside that membership are removed from LuaMoon's
+script and SLSsteam key cache; the original data is kept privately for recovery.
+Shared dependencies, app IDs and DLC entries retain their separate Steam selection
+rules. This uses the union of public retail packages, not the account's exact purchased
+edition. Missing package or app-depot metadata stops preparation instead of selecting
+all provider depots. A changed depot set restarts the private client before installation.
+
+Settings → Plugins → Steam Downloader → Isolated Steam → Manage installed content
+queries only the private Steam libraries. Uninstall requires explicit confirmation,
+blocks queued/active downloads and verifies removal from Steam before showing success.
+Exported game folders remain separate and are not removed by this action.
+
+After Playlite verifies and finalizes the exported files, it asks isolated Steam
+to uninstall the private game copy and removes that game's intermediate export
+cache. Failed exports retain their private source. If cleanup fails after a
+successful export, the download remains Complete with a cleanup-pending message;
+the exported installation remains usable.
+
+Plugin installation opens the Steam environment installer, with NordVPN
+authentication available directly in it. Plugin removal offers separate choices
+to remove the environment and delete private data/logins. New volumes and images
+receive installation ownership labels; private directories have a receipt.
+Cleanup preserves resources without matching ownership, including older
+unlabelled resources, external game folders and host/shared packages.

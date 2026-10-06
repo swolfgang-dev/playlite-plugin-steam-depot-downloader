@@ -25,7 +25,7 @@ class QueueIntegrationTests(unittest.TestCase):
         dialog.rows=[Depot(11,1,b'manifest')];plan=[(10,dialog.rows[0],'Game')]
         dialog.destination.setText('/tmp/playlite-queue-integration-new')
         with patch.object(dialog,'task',side_effect=lambda operation,done,**kwargs:done((plan,['OK']))):
-            dialog.prepare_download()
+            dialog.prepare_legacy_download()
         self.assertEqual(len(window.download_queue.entries),1)
         self.assertFalse(dialog.owns_connection)
         self.assertEqual(dialog.start_button.text(),'Add to queue')

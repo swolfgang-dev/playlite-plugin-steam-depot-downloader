@@ -59,7 +59,7 @@ class Transport:
         try:
             result = subprocess.run(['docker', *args], input=payload, capture_output=True, text=True, timeout=45)
             if result.returncode:
-                raise RuntimeError('The isolated HTTP worker failed. Build the native worker image first.')
+                raise RuntimeError('The isolated HTTP worker failed. Run isolated Steam setup in downloader settings.')
             response = json.loads(result.stdout)
             status = response['status']
             if status != 200:

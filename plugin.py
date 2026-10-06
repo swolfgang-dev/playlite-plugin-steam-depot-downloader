@@ -1,6 +1,6 @@
 from pathlib import Path
 from PyQt6.QtCore import QTimer, Qt, QCoreApplication, QObject, QRunnable, QThreadPool, QSettings, pyqtSignal
-from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout, QGroupBox, QVBoxLayout, QSizePolicy, QDialog, QFileDialog
+from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout, QGroupBox, QVBoxLayout, QSizePolicy, QDialog, QFileDialog, QCheckBox
 from playlite.providers import GenericPlugin
 from .credentials import Wallet
 from .network import Network
@@ -57,16 +57,35 @@ class Plugin(GenericPlugin):
             dialog=existing or DownloadDialog(self.network,window)
             dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
             dialog.show();dialog.raise_();dialog.activateWindow()
-        def open_steam_setup():
-            from .steam_runtime_dialog import SteamRuntimeDialog
-            SteamRuntimeDialog(self.network,window).exec()
-        return [('Steam Depot Downloader…', open_downloader),('Isolated Steam setup…',open_steam_setup)]
+        return [('Steam Downloader…', open_downloader)]
+
+    def restore_downloads(self,window,queue):
+        from .steam_queue_runner import SteamQueueRunner
+        from .vpn_lifecycle import watch_queue
+        watch_queue(self.network,queue)
+        for row in queue.entries:
+            if row.metadata.get('backend')!='isolated_steam':continue
+            snapshot=row.metadata.get('snapshot',{})
+            if (type(snapshot.get('app')) is not int or not 0<snapshot['app']<2**32
+                    or snapshot.get('platform') not in ('windows','linux')):continue
+            row.steam_appid=snapshot['app']
+            row.factory=lambda queue,entry,snapshot=snapshot:SteamQueueRunner(self.network,window,queue,entry,snapshot)
+            if row.state=='Complete':row.controller=row.factory(queue,row)
 
     def settings(self):
         return QSettings('Playlite', 'SteamDownloader')
 
+    def post_install(self,parent=None):
+        from .steam_runtime_dialog import SteamRuntimeDialog
+        SteamRuntimeDialog(self.network,parent).exec()
+
+    def prepare_uninstall(self,parent=None):
+        from .environment_uninstall import EnvironmentRemovalDialog
+        return EnvironmentRemovalDialog(self.network,parent).exec()==QDialog.DialogCode.Accepted
+
     def create_settings(self, parent=None):
         widget = SettingsWidget(parent)
+        widget.network = self.network
         widget.settings_closed = False
         owner = widget.window()
         if isinstance(owner, QDialog):
@@ -74,6 +93,7 @@ class Plugin(GenericPlugin):
         page = QVBoxLayout(widget)
         page.setContentsMargins(0, 8, 0, 0)
         page.setSpacing(16)
+        page.setAlignment(Qt.AlignmentFlag.AlignTop)
         note = QLabel('Downloads use an isolated VPN and a separate Steam session.')
         note.setWordWrap(True)
         page.addWidget(note)
@@ -134,63 +154,45 @@ class Plugin(GenericPlugin):
         controls.addStretch()
         form.addRow('Connection', controls)
         form.addRow(widget.status)
-        widget.auth_status = {}
-        form = section('Steam')
-        def account_row(name):
-            line = QHBoxLayout()
-            line.setSpacing(10)
-            status = QLabel('Status not checked')
-            status.setWordWrap(True)
-            widget.auth_status[name] = status
-            button = QPushButton('Authenticate')
-            button.setFixedWidth(max(180, button.sizeHint().width()))
-            def open_login():
-                if name == 'Steam':
-                    from .download_dialog import DownloadDialog
-                    dialog = DownloadDialog(self.network, widget, authentication='steam')
-                else:
-                    from .authentication_dialog import CredentialDialog
-                    dialog = CredentialDialog(name, self.network, widget)
-                dialog.exec()
-                refresh_status()
-            button.clicked.connect(open_login)
-            line.addWidget(status, 1); line.addWidget(button)
-            if name == 'Steam':
-                forget = QPushButton('Sign out')
-                def sign_out():
-                    from .credentials import SteamSessionWallet
-                    account = self.settings().value('steam_account', '')
-                    try:
-                        if account: SteamSessionWallet(account).clear()
-                        self.network.steam_confirmed = False
-                        refresh_status()
-                    except Exception:
-                        status.setText('Could not remove saved login. Unlock KWallet and retry.')
-                forget.clicked.connect(sign_out)
-                line.addWidget(forget)
-
-            if name != 'Steam':
-                label = QLabel(name)
-                label.setFixedWidth(90)
-                line.insertWidget(0, label)
-            form.addRow(line)
-        account_row('Steam')
-        form = section('Manifest providers')
-        account_row('Moon')
-        account_row('Hubcap')
-        def refresh_status():
-            from .credentials import MoonSessionWallet, SteamSessionWallet, HubcapKeyWallet
-            account = self.settings().value('steam_account', '')
-            stores = {'Moon': MoonSessionWallet(), 'Hubcap': HubcapKeyWallet(),
-                      'Steam': SteamSessionWallet(account)}
-            for name, store in stores.items():
-                try:
-                    saved = store.read() if name != 'Steam' or account else None
-                    text = ('API key saved; verification pending' if name == 'Hubcap'
-                            else 'Login saved' + (f' for {account}' if name == 'Steam' else '')) if saved else 'Not signed in'
-                    widget.auth_status[name].setText(('Login confirmed this session' if name != 'Hubcap' else 'API key accepted this session') if saved and getattr(self.network, name.lower() + '_confirmed', False) else text)
-                except Exception:
-                    widget.auth_status[name].setText('Unlock KWallet to check saved login')
+        widget.keep_vpn_open=QCheckBox('Keep VPN connected for the Playlite session')
+        widget.keep_vpn_open.setChecked(self.settings().value('keep_vpn_open',False,type=bool))
+        form.addRow(widget.keep_vpn_open)
+        form = section('Isolated Steam')
+        widget.keep_steam_open=QCheckBox('Keep Steam open for the Playlite session')
+        widget.keep_steam_open.setChecked(self.settings().value('keep_steam_open',False,type=bool))
+        form.addRow(widget.keep_steam_open)
+        lifetime=QLabel('Keeping Steam open also keeps its isolated VPN connected. Both stop when Playlite exits. Disconnect stops both immediately.')
+        lifetime.setWordWrap(True);form.addRow(lifetime)
+        setup = QPushButton('Set up isolated Steam…')
+        desktop = QPushButton('Open Steam desktop…')
+        widget.stop_steam_button=QPushButton('Stop Steam environment')
+        widget.stop_steam_button.clicked.connect(lambda:self.stop_steam(widget))
+        manage = QPushButton('Manage installed content…')
+        explanation = QLabel('Set up Steam and LuaMoon in a private container. Steam and manifest provider authentication are managed in its desktop. Saved container sessions are retained.')
+        explanation.setWordWrap(True)
+        form.addRow(explanation)
+        def open_setup(install=False):
+            if self.busy:
+                widget.status.setText('Wait for the VPN connection to finish before opening setup.')
+                return
+            self.save_settings(widget)
+            from .steam_runtime_dialog import SteamRuntimeDialog
+            dialog = SteamRuntimeDialog(self.network, widget)
+            if install: QTimer.singleShot(0, dialog.install)
+            else: QTimer.singleShot(0, dialog.desktop)
+            dialog.exec()
+        setup.clicked.connect(lambda: open_setup(True))
+        desktop.clicked.connect(lambda: open_setup(False))
+        line = QHBoxLayout(); line.setSpacing(10)
+        def manage_content():
+            if self.busy:
+                widget.status.setText('Wait for the VPN connection to finish.');return
+            from .installed_games_dialog import InstalledGamesDialog
+            InstalledGamesDialog(self.network,widget).exec()
+        manage.clicked.connect(manage_content)
+        line.addWidget(setup); line.addWidget(desktop);line.addWidget(widget.stop_steam_button); line.addStretch()
+        form.addRow(line)
+        form.addRow(manage)
         form = section('Downloads')
         widget.download_root = QLineEdit(self.settings().value('download_root', str(Path.home() / 'Downloads')))
         browse_root = QPushButton('Browse…')
@@ -203,13 +205,6 @@ class Plugin(GenericPlugin):
         form.addRow('Default location', root_line)
         hint = QLabel('Each game downloads into its own folder here. Missing folders are created automatically.')
         hint.setWordWrap(True); form.addRow(hint)
-        check = QPushButton('Refresh login status')
-        check.clicked.connect(refresh_status)
-        footer = QHBoxLayout()
-        footer.addStretch()
-        footer.addWidget(check)
-        page.addLayout(footer)
-        refresh_status()
         def on_open():
             widget.settings_closed = False
             if self.busy or not widget.isVisible(): return
@@ -234,7 +229,6 @@ class Plugin(GenericPlugin):
         if has_downloads(self.network):
             disconnect_when_idle(self.network)
             return
-        self.network.cancel()
         if not self.busy:self.disconnect_after_settings()
 
     def disconnect_after_settings(self):
@@ -249,7 +243,16 @@ class Plugin(GenericPlugin):
         else:
             self.start(widget, lambda progress: self.network.disconnect())
 
-    def start(self, widget, function, cancellable=False):
+    def stop_steam(self,widget):
+        from .vpn_lifecycle import has_downloads
+        if has_downloads(self.network):
+            widget.status.setText('Pause or cancel queued and active downloads before stopping Steam.');return
+        if self.busy:
+            widget.status.setText('Wait for the current operation to finish before stopping Steam.');return
+        from .steam_runtime import SteamRuntime
+        self.start(widget,lambda progress:SteamRuntime(self.network).stop(),start_steam=False)
+
+    def start(self, widget, function, cancellable=False,start_steam=True):
         if self.busy:
             return
         self.busy = True
@@ -261,7 +264,13 @@ class Plugin(GenericPlugin):
         if cancellable:
             widget.buttons[-1].setText('Cancel connection')
             widget.buttons[-1].setEnabled(True)
-        job = Job(lambda: function(job.signals.progress.emit))
+        def operation():
+            result=function(job.signals.progress.emit)
+            if start_steam and self.network.container:
+                from .steam_runtime import start_with_vpn
+                start_with_vpn(self.network,job.signals.progress.emit)
+            return result
+        job = Job(operation)
         def progress(text):
             try:
                 if not self.network.cancelled.is_set():
@@ -294,4 +303,6 @@ class Plugin(GenericPlugin):
         settings.setValue('download_root',str(root))
         settings.setValue('country', preferences.country)
         settings.setValue('protocol', preferences.protocol)
+        settings.setValue('keep_steam_open',widget.keep_steam_open.isChecked())
+        settings.setValue('keep_vpn_open',widget.keep_vpn_open.isChecked())
         settings.sync()

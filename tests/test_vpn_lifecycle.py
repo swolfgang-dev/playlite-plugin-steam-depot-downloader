@@ -13,6 +13,7 @@ class Queue(QObject):
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
         self.network=Mock()
+        self.preferences=patch('downloader.vpn_lifecycle.session_preferences',return_value=(False,False)).start()
         self.pool=patch('downloader.vpn_lifecycle.QThreadPool').start()
         self.addCleanup(patch.stopall)
         self.pool.globalInstance.return_value.start.side_effect=lambda job:job.run()
@@ -30,14 +31,56 @@ class LifecycleTests(unittest.TestCase):
         queue.entries[1].state='Complete';queue.changed.emit()
         self.network.disconnect.assert_called_once()
 
-    def test_queue_drains_even_if_downloader_stays_open(self):
+    def test_queue_drains_without_open_windows(self):
         queue=Queue(['Downloading']);watch_queue(self.network,queue)
         queue.entries[0].state='Failed';queue.changed.emit()
         self.network.disconnect.assert_called_once()
         queue.changed.emit();self.network.disconnect.assert_called_once()
+
+    def test_finished_queue_keeps_connection_for_open_window(self):
+        queue=Queue(['Downloading']);watch_queue(self.network,queue)
+        with patch('downloader.vpn_lifecycle.has_open_windows',return_value=True):
+            queue.entries[0].state='Complete';queue.changed.emit()
+            self.network.disconnect.assert_not_called()
+            self.network.cancel.assert_not_called()
+            self.assertTrue(self.network.disconnect_pending)
+        disconnect_when_idle(self.network)
+        self.network.disconnect.assert_called_once()
+
+    def test_closing_one_window_keeps_connection_for_another(self):
+        with patch('downloader.vpn_lifecycle.has_open_windows',return_value=True):
+            disconnect_when_idle(self.network)
+            self.network.disconnect.assert_not_called()
+            self.network.cancel.assert_not_called()
+        disconnect_when_idle(self.network)
+        self.network.disconnect.assert_called_once()
 
     def test_cancelled_waiting_download_releases_vpn(self):
         queue=Queue(['Queued']);watch_queue(self.network,queue)
         disconnect_when_idle(self.network)
         queue.entries[0].state='Cancelled';queue.changed.emit()
         self.network.disconnect.assert_called_once()
+
+    def test_keep_steam_also_keeps_vpn(self):
+        self.preferences.return_value=(True,False)
+        queue=Queue(['Downloading']);watch_queue(self.network,queue)
+        queue.entries[0].state='Complete';queue.changed.emit()
+        self.network.cancel.assert_not_called()
+        self.network.disconnect.assert_not_called()
+        self.pool.globalInstance.return_value.start.assert_not_called()
+
+    def test_keep_vpn_stops_only_steam(self):
+        self.preferences.return_value=(False,True)
+        self.network.container='isolated-vpn'
+        with patch('downloader.steam_runtime.SteamRuntime') as runtime:
+            disconnect_when_idle(self.network)
+            runtime.return_value.request.assert_called_once_with('stop')
+        self.network.cancel.assert_not_called()
+        self.network.disconnect.assert_not_called()
+
+    def test_keep_vpn_does_not_stop_steam_during_download(self):
+        self.preferences.return_value=(False,True)
+        queue=Queue(['Downloading']);watch_queue(self.network,queue)
+        with patch('downloader.steam_runtime.SteamRuntime') as runtime:
+            disconnect_when_idle(self.network)
+            runtime.assert_not_called()

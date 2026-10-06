@@ -8,7 +8,7 @@ import tempfile
 import time
 import threading
 import sys
-from .constants import IMAGE, LABEL, WORKER_LABEL
+from .constants import IMAGE, LABEL, WORKER_LABEL, PROFILE_SUFFIX
 from .guardian import process_token, safe_directory
 from .settings import Preferences
 from .recommendations import recommended_servers
@@ -32,7 +32,7 @@ class AuthenticationRejected(ConnectionAttemptFailed):
 
 class Network:
     def __init__(self):
-        self.name = 'playlite-steam-downloader-vpn-' + str(os.getuid())
+        self.name = 'playlite-steam-downloader-vpn-' + str(os.getuid()) + PROFILE_SUFFIX
         self.directory = None
         self.container = None
         self.cancelled = threading.Event()
@@ -73,6 +73,8 @@ class Network:
         return data
 
     def disconnect(self):
+        relay=vars(self).pop('_steam_desktop_relay',None)
+        if relay and relay[0].poll() is None:relay[0].terminate()
         if self.container:
             self.inspect()
             workers = self.docker('ps', '-aq', '--filter', 'label=' + WORKER_LABEL + '=' + self.container)
