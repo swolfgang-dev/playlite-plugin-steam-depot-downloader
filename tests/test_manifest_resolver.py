@@ -59,3 +59,18 @@ class FallbackTests(unittest.TestCase):
     def test_request_budget_stops_excessive_fetching(self):
         resolver=ManifestResolver('Luie',Mock(return_value=[]),limit=1)
         with self.assertRaisesRegex(ValueError,'request limit'):resolver.first_pack(10)
+
+    def test_key_only_row_is_bound_to_current_steam_manifest(self):
+        base=[Depot(i,None,b'','ab'*32) for i in (11,12)]
+        resolver=ManifestResolver('Luie',Mock(return_value=[]))
+        plan=resolver.prepare(self.info,base,'linux',set())
+        self.assertEqual([row.manifest for _,row,_ in plan],[1,1])
+        self.assertEqual(resolver.fetch.call_count,3)
+
+    def test_binary_fallback_retains_lua_key(self):
+        base=[Depot(i,None,b'', 'ab'*32) for i in (11,12)]
+        fetch=Mock(side_effect=lambda source,app:[Depot(i,1,b'binary') for i in (11,12)] if source=='Hubcap' else [])
+        resolver=ManifestResolver('Luie',fetch)
+        plan=resolver.prepare(self.info,base,'linux',set())
+        self.assertTrue(all(row.data==b'binary' and row.key=='ab'*32 for _,row,_ in plan))
+        fetch.assert_called_once_with('Hubcap',10)

@@ -199,3 +199,18 @@ credentials, browser challenges and HTTP failures are recorded and do not stop
 fallback to the remaining providers. Detailed failures are available through
 **Show details**; no game is queued until every required manifest and CDN sample
 passes. Provider requests continue to use the isolated VPN.
+
+Providers can return plain Lua metadata or ZIP packs containing Lua and/or binary
+manifests. Lua is parsed strictly as data and is never executed. Depot keys without
+manifest pins are bound to the current Steam branch manifest. When a Lua-only row
+is available, remaining providers are checked for its exact binary manifest;
+matching binaries can be combined with the Lua key. If no provider supplies the
+binary, the isolated worker requests it from Steam. Steam can reject this request
+even when provider metadata is available; the CDN preflight still must succeed.
+
+Base-game depot selection uses the authenticated account's relevant Steam package
+depot lists. If no relevant account package is available, public store package IDs
+are resolved through authenticated Steam package metadata. This excludes content
+outside those packages, including developer depots, without a game-specific deny
+list. When package metadata is unavailable, selection falls back to app metadata.
+Manual DLC selections remain available; package ownership is not a download gate.

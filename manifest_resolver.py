@@ -1,4 +1,5 @@
 """Fill missing Steam manifests from providers without accepting stale versions."""
+from dataclasses import replace
 from .app_info import ordered_content,matches_platform,manifest_id,build_plan
 from .providers import SOURCES
 
@@ -39,12 +40,17 @@ class ManifestResolver:
             for source in self.providers:
                 for owner in owners:
                     for row in self.pack(source,owner):
-                        if row.id==key and (expected is None or row.manifest==expected):
-                            found=row;self.used[key]=source;break
-                    if found:break
+                        if row.id==key and (expected is None or row.manifest==expected or row.manifest is None and row.key):
+                            candidate=replace(row,manifest=expected) if row.manifest is None and expected is not None else row
+                            if found is None:
+                                found=candidate;self.used[key]=source
+                            elif candidate.data:
+                                found=replace(candidate,key=candidate.key or found.key);self.used[key]=source
+                            if found.data:break
+                    if found and found.data:break
                     error=self.errors.get((source,owner))
                     attempts.append(f'{source} / App {owner}: {error or "matching manifest unavailable"}')
-                if found:break
+                if found and found.data:break
             if not found:
                 title=entry['name'] or f'DLC {entry["id"]}'
                 detail='; '.join(attempts)

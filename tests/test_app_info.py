@@ -267,3 +267,28 @@ class SteamPlanningTests(unittest.TestCase):
         self.assertIn(200,{row['id'] for row in resolved['dlc']})
         self.assertEqual(build_plan(resolved,{10:[Depot(11,1,b'manifest')]},'linux',{200})[0][0],100)
         fetch.assert_called_once_with(100)
+
+class PackageSelectionTests(unittest.TestCase):
+    def test_package_metadata_excludes_unpublished_depots_without_name_guessing(self):
+        info=fixture();info['game']['package_depots']=[11,12]
+        info['game']['depots']['99']=depot('linux')
+        rows=[Depot(i,1,b'manifest') for i in (11,12)]
+        self.assertEqual([row.id for _,row,_ in build_plan(info,{10:rows},'linux',set())],[11,12])
+
+    def test_selected_dlc_is_allowed_outside_base_package(self):
+        info=fixture();info['game']['owned']=False;info['game']['package_depots']=[11,12]
+        rows=[Depot(i,1,b'manifest') for i in (11,12,21)]
+        self.assertEqual([row.id for _,row,_ in build_plan(info,{10:rows},'linux',{20})],[11,12,21])
+
+    def test_bad_package_depot_ids_are_rejected(self):
+        info=fixture();info['game']['package_depots']=['11']
+        with self.assertRaisesRegex(ValueError,'package depot'):validate_info(info,10)
+
+    def test_public_package_discovery_is_bounded_and_validates_ids(self):
+        import json
+        from downloader.app_info import store_package_ids
+        with patch('downloader.providers.Transport') as transport:
+            transport.return_value.request.return_value=json.dumps({'10':{'success':True,'data':{'packages':[123,123,-1,'secret',True]}}}).encode()
+            self.assertEqual(store_package_ids(Mock(),10),[123])
+            transport.return_value.request.return_value=json.dumps({'10':{'success':True,'data':{'packages':list(range(100))}}}).encode()
+            self.assertEqual(store_package_ids(Mock(),10),[])

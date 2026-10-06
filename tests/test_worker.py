@@ -55,3 +55,15 @@ class WorkerTests(unittest.TestCase):
         require_download_success(0, 'Total downloaded: 100 bytes from 1 depots')
 
 if __name__ == '__main__': unittest.main()
+
+class KeyOnlyWorkerTests(unittest.TestCase):
+    def test_missing_binary_manifest_is_fetched_by_native_worker(self):
+        network=Network();network.container='test-vpn';network.check=Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            network.directory=directory
+            pack=Path(directory)/'pack';pack.mkdir();(pack/'depot.keys').write_text('test data')
+            args=worker_args(network,Request(10,11,12),directory,pack=pack,username='account')
+        self.assertNotIn('-manifestfile',args)
+        self.assertIn('-depotkeys',args)
+        self.assertIn('-manifest',args)
+        self.assertNotIn('test data',str(args))

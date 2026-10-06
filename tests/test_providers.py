@@ -189,3 +189,38 @@ class SeparatedWorkflowTests(unittest.TestCase):
     def test_plugin_exposes_main_menu_action(self):
         from downloader.plugin import Plugin
         self.assertEqual(Plugin().main_menu_actions(Mock())[0][0],'Steam Depot Downloader…')
+
+class LuaOnlyTests(unittest.TestCase):
+    def test_plain_lua_pins_and_keys_are_data_without_binary_manifest(self):
+        text='addappid(736260)\naddappid(123,1,"'+'ab'*32+'")\nsetManifestid(123,"456")\nos.execute("never run")'
+        row=parse_pack(text.encode(),736260)[0]
+        self.assertEqual((row.id,row.manifest,row.data),(123,456,b''))
+        self.assertEqual(row.key,'ab'*32)
+        self.assertNotIn('abab',repr(row))
+
+    def test_key_only_input_can_use_steam_current_manifest(self):
+        row=parse_pack(('addappid(736260)\naddappid(123,1,"'+'ab'*32+'")').encode(),736260)[0]
+        self.assertIsNone(row.manifest);self.assertFalse(row.data)
+
+    def test_lua_only_zip_and_numeric_pins_are_accepted(self):
+        rows=parse_pack(pack({'game.lua':'addappid(736260)\nsetManifestid(123,456)'}),736260)
+        self.assertEqual((rows[0].id,rows[0].manifest),(123,456))
+
+    def test_safe_windows_archive_paths_are_normalized(self):
+        rows=parse_pack(pack({'game\\game.lua':'addappid(736260)','game\\123_456.manifest':b'blob'}),736260)
+        self.assertEqual(rows[0].id,123)
+        for path in ('game\\..\\evil.lua','C:\\evil.lua','\\absolute.lua'):
+            with self.assertRaises(ValueError):parse_pack(pack({path:'addappid(736260)'}),736260)
+
+    def test_normalized_duplicate_names_and_wrong_game_are_rejected(self):
+        with self.assertRaises(ValueError):parse_pack(pack({'a\\game.lua':'addappid(736260)','a/game.lua':'addappid(736260)'}),736260)
+        with self.assertRaises(ValueError):parse_pack(b'addappid(999)\nsetManifestid(123,"456")',736260)
+
+    def test_key_only_inputs_do_not_fabricate_manifest_files(self):
+        import tempfile
+        from pathlib import Path
+        from downloader.providers import prepare_depot,Depot
+        with tempfile.TemporaryDirectory() as root:
+            directory=Path(root)/'pack';prepare_depot(Depot(123,456,b'','ab'*32),directory)
+            self.assertFalse((directory/'manifest.bin').exists())
+            self.assertTrue((directory/'depot.keys').exists())

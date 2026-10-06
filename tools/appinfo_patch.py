@@ -2,7 +2,7 @@
 from pathlib import Path
 
 METHOD = r'''
-        public static async Task ExportPlayliteAppInfo(uint appId)
+        public static async Task ExportPlayliteAppInfo(uint appId, uint[] publicPackages)
         {
             object Tree(KeyValue node) => node.Children.Count == 0
                 ? (object)(node.Value ?? "")
@@ -10,8 +10,25 @@ METHOD = r'''
             async Task<object> Info(uint id)
             {
                 await steam3.RequestAppInfo(id);
+                var owned = await AccountHasAccess(id, id);
+                var licensed = (steam3.Licenses ?? []).Select(value => value.PackageID).ToHashSet();
+                var relevant = steam3.PackageInfo.Where(pair => licensed.Contains(pair.Key)
+                    && pair.Value != null && pair.Value.KeyValues["appids"].Children.Any(value => value.AsUnsignedInteger() == id))
+                    .Select(pair => pair.Value).ToList();
+                var packageSource = "account";
+                if (relevant.Count == 0 && id == appId && publicPackages.Length > 0)
+                {
+                    await steam3.RequestPackageInfo(publicPackages);
+                    relevant = steam3.PackageInfo.Where(pair => publicPackages.Contains(pair.Key)
+                        && pair.Value != null && pair.Value.KeyValues["appids"].Children.Any(value => value.AsUnsignedInteger() == id))
+                        .Select(pair => pair.Value).ToList();
+                    packageSource = "store";
+                }
+                uint[] packageDepots = relevant.Count == 0 ? null : relevant
+                    .SelectMany(package => package.KeyValues["depotids"].Children)
+                    .Select(value => value.AsUnsignedInteger()).Where(value => value > 0).Distinct().ToArray();
                 return new {
-                    id, owned = await AccountHasAccess(id, id), name = GetSteam3AppSection(id, EAppInfoSection.Common)?["name"].AsString() ?? "",
+                    id, owned, package_depots = packageDepots, package_source = relevant.Count == 0 ? "unavailable" : packageSource, name = GetSteam3AppSection(id, EAppInfoSection.Common)?["name"].AsString() ?? "",
                     depots = Tree(GetSteam3AppSection(id, EAppInfoSection.Depots) ?? KeyValue.Invalid)
                 };
             }
@@ -35,7 +52,12 @@ BRANCH = r'''
             if (HasParameter(args, "-app-info"))
             {
                 if (!InitializeSteam(username, password)) return 1;
-                try { await ContentDownloader.ExportPlayliteAppInfo(appId); return 0; }
+                try {
+                    var packageIds = (GetParameter<string>(args, "-package-ids") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(value => uint.Parse(value)).Distinct().ToArray();
+                    if (packageIds.Length > 64) throw new ContentDownloaderException("Package metadata request exceeds the limit.");
+                    await ContentDownloader.ExportPlayliteAppInfo(appId, packageIds); return 0;
+                }
                 finally { ContentDownloader.ShutdownSteam3(); }
             }
 
@@ -43,6 +65,10 @@ BRANCH = r'''
 def apply(source):
     source = Path(source) / 'DepotDownloader'
     path = source / 'Program.cs'; text = path.read_text()
+    if 'if (HasParameter(args, \"-app-info\"))' in text:
+        start=text.rfind('\n',0,text.index('            if (HasParameter(args, \"-app-info\"))'))
+        end=text.index('            var pubFile',start)
+        text=text[:start]+text[end:]
     if 'ExportPlayliteAppInfo' not in text:
         marker = '            var pubFile = GetParameter(args, "-pubfile", ContentDownloader.INVALID_MANIFEST_ID);'
         if marker not in text: raise RuntimeError('Worker metadata entry point changed.')

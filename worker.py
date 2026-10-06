@@ -47,10 +47,9 @@ def worker_args(network, request, staging, image='playlite-depot-worker:test', p
               '-e', 'DOTNET_PROCESSOR_COUNT=2', '--workdir', '/tmp']
     if pack is not None:
         pack = Path(pack).resolve(strict=True)
-        if not pack.is_dir() or not (pack / 'manifest.bin').is_file():
-            raise ValueError('Prepared pack must contain manifest.bin.')
+        if not pack.is_dir():raise ValueError('Prepared pack must be a directory.')
         mounts += ['--mount', f'type=bind,src={pack},dst=/input,readonly']
-        arguments += ['-manifestfile', '/input/manifest.bin']
+        if (pack/'manifest.bin').is_file():arguments+=['-manifestfile','/input/manifest.bin']
         if (pack / 'depot.keys').is_file():
             arguments += ['-depotkeys', '/input/depot.keys']
     network.check()  # Fail closed before starting any worker.

@@ -618,6 +618,8 @@ class DownloadDialog(QDialog):
             failed=[failures[key][1] for key in required if key in failures and expected.get(key)==failures[key][0]]
             if not reason and failed:reason='CDN access check failed'
             availability=failed[0] if reason=='CDN access check failed' else entry.get('manifest_error','') if reason=='Manifest request failed' else reason or ('Required manifests are available. Steam/CDN access has not been tested.' if required<=available else 'Extra manifests are needed; the provider will be checked before queueing. Steam/CDN access has not been tested.')
+            if not reason and any(row.id in required and not row.data for row in self.rows):
+                availability='Provider metadata is available. Binary manifests will be fetched from Steam and CDN access checked before queueing.'
             checks=self.content_info.get('_cdn_checks',{})
             if not reason and required and all(key in checks and checks[key][1]=='OK' and (key not in manifests or checks[key][0]==manifests[key]) for key in required):
                 availability='Steam/CDN sample verified. This does not guarantee completion of the full download.'

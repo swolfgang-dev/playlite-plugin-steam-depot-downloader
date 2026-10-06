@@ -1,5 +1,6 @@
 """Steam depot/DLC discovery inside the guarded, authenticated worker."""
 import copy
+from dataclasses import replace
 import base64
 import json
 from pathlib import Path
@@ -14,6 +15,18 @@ from .credentials import SteamSessionWallet
 from .worker import Request, worker_args
 
 
+def store_package_ids(network,app):
+    """Public store packages are selection metadata, never an ownership gate."""
+    from .providers import Transport
+    try:
+        response=json.loads(Transport(network).request(f'https://store.steampowered.com/api/appdetails?appids={app}&l=english'))
+        entry=response.get(str(app),{})
+        packages=entry.get('data',{}).get('packages',[]) if entry.get('success') else []
+        if not isinstance(packages,list) or len(packages)>64:return []
+        return list(dict.fromkeys(value for value in packages if type(value) is int and 0<value<2**32))
+    except (ValueError,RuntimeError,TypeError,AttributeError):return []
+
+
 def fetch_app_info(network, app, username):
     Request(app, 1).arguments()
     if not username.strip(): raise ValueError('Authenticate with Steam before loading DLC.')
@@ -22,6 +35,7 @@ def fetch_app_info(network, app, username):
     if not saved: raise ValueError('Authenticate with Steam before loading DLC.')
     data = base64.b64decode(saved['data'], validate=True)
     if len(data) > 4 * 1024 * 1024: raise ValueError('Saved Steam session exceeds the size limit.')
+    packages=store_package_ids(network,app)
     name = 'playlite-appinfo-' + uuid.uuid4().hex
     with tempfile.TemporaryDirectory(prefix='playlite-appinfo-') as directory:
         auth = Path(directory) / 'auth'; auth.mkdir(mode=0o777); auth.chmod(0o777)
@@ -33,7 +47,8 @@ def fetch_app_info(network, app, username):
         args[index:index] = ['--mount', f'type=bind,src={auth},dst=/auth']
         index = args.index('playlite-depot-worker:test')
         args[index + 1:] = ['-app-info', '-app', str(app), '-username', username.strip(),
-                            '-loginid', str(secrets.randbelow(2**32-1)+1), '-remember-password']
+                            '-loginid', str(secrets.randbelow(2**32-1)+1), '-remember-password',
+                            '-package-ids', ','.join(map(str,packages))]
         args[1:1] = ['--name', name]
         try:
             code, output = metadata_output(['docker', *args])
@@ -82,6 +97,9 @@ def validate_info(info, app):
     for entry in [info['game'], *info['dlc']]:
         if not isinstance(entry, dict) or type(entry.get('id')) is not int or not 0 < entry['id'] < 2**32 or not isinstance(entry.get('name'), str) or not isinstance(entry.get('depots'), (dict,str)):
             raise ValueError('Steam returned invalid content information.')
+        allowed=entry.get('package_depots')
+        if allowed is not None and (not isinstance(allowed,list) or len(allowed)>8192 or any(type(value) is not int or not 0<value<2**32 for value in allowed)):
+            raise ValueError('Steam returned invalid package depot information.')
         if entry is not info['game']:
             if entry['id'] in seen: raise ValueError('Steam returned duplicate DLC entries.')
             seen.add(entry['id'])
@@ -166,9 +184,11 @@ def ordered_content(info, selected):
     known={row['id']:row for row in info['dlc']}
     if set(selected)-known.keys():raise ValueError('Unknown DLC selection.')
     seen=set();result=[]
+    allowed=info['game'].get('package_depots')
     for key,node in depot_entries(info['game']).items():
         dlc=int(node.get('dlcappid','0') or 0)
         if dlc and dlc not in selected:continue
+        if not dlc and isinstance(allowed,list) and key not in allowed:continue
         owner=known.get(dlc,info['game']);seen.add(key)
         result.append((owner,key,dict(node,_download_app=info['game']['id'])))
     for entry in info['dlc']:
@@ -193,6 +213,7 @@ def build_plan(info, packs, platform, selected, language='english', architecture
         rows.update({row.id:row for row in packs.get(source,[])})
         row=rows.get(key)
         if row is None:raise ValueError(f'Manifest provider is missing depot {key} for {entry["name"]}. No download has started.')
+        if row.manifest is None and row.key and expected is not None:row=replace(row,manifest=expected)
         if expected is not None and row.manifest!=expected:
             raise ValueError(f'Provider manifest for depot {key} does not match Steam branch {branch}. Refresh or choose another provider; no download has started.')
         plan.append((source,row,entry['name']))

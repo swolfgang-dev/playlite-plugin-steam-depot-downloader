@@ -95,7 +95,7 @@ class Transport:
 @dataclass(frozen=True)
 class Depot:
     id: int
-    manifest: int
+    manifest: int | None
     data: bytes = field(repr=False)
     key: str | None = field(default=None, repr=False)
     name: str = ''
@@ -113,50 +113,53 @@ def parse_pack(data, app):
             if len(data) > MAX_PACK: raise ValueError('Expanded response exceeds the size limit.')
         except OSError as error:
             raise ValueError('Provider returned a corrupt compressed response.') from error
-    if not zipfile.is_zipfile(io.BytesIO(data)):
-        kind = 'HTML page' if data.lstrip().lower().startswith((b'<!doctype', b'<html')) else 'JSON response' if data.lstrip().startswith((b'{', b'[')) else 'RAR archive' if data.startswith(b'Rar!') else '7z archive' if data.startswith(b'7z\xbc\xaf\x27\x1c') else 'non-ZIP response'
-        raise ValueError(f'Provider returned a {kind} instead of a ZIP manifest pack ({len(data)} bytes).')
     keys, pins, manifests, names = {}, {}, {}, set()
-    app_ids = set()
-    depot_names = {}
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            if len(archive.infolist()) > 4096 or sum(info.file_size for info in archive.infolist()) > MAX_PACK:
-                raise ValueError('Manifest pack exceeds the expanded size limit.')
-            for info in archive.infolist():
-                name = PurePosixPath(info.filename)
-                if name.is_absolute() or '..' in name.parts or '\\' in info.filename or info.filename in names or (info.external_attr >> 16) & 0o170000 == 0o120000:
-                    raise ValueError('Unsafe manifest pack entry.')
-                names.add(info.filename)
-                if info.is_dir(): continue
-                if name.suffix.lower() == '.lua':
-                    lua = archive.read(info)
-                    encoding = 'utf-16' if lua.startswith((b'\xff\xfe', b'\xfe\xff')) else 'utf-8-sig'
-                    try:
-                        text = lua.decode(encoding)
-                    except UnicodeError as error:
-                        raise ValueError('A Lua file in the manifest pack has an unsupported text encoding.') from error
-                    for line in text.splitlines():
-                        label = re.search(r'addappid\s*\(\s*(\d+).*?\)\s*--\s*(.+)$', line)
-                        if label: depot_names[int(label[1])] = label[2].strip()[:200]
-                    app_ids.update(map(int, re.findall(r'addappid\s*\(\s*(\d+)\s*(?:\)|,)', text)))
-                    for depot, key in re.findall(r'addappid\s*\(\s*(\d+)\s*,\s*\d+\s*,\s*[\'"]([0-9a-fA-F]{64})[\'"]\s*\)', text):
-                        depot = int(depot)
-                        if depot in keys and keys[depot] != key.lower(): raise ValueError('Conflicting depot keys.')
-                        keys[depot] = key.lower()
-                    for depot, manifest in re.findall(r'setManifestid\s*\(\s*(\d+)\s*,\s*[\'"](\d+)[\'"]', text):
-                        depot, manifest = int(depot), int(manifest)
-                        if depot in pins and pins[depot] != manifest: raise ValueError('Conflicting manifest pins.')
-                        pins[depot] = manifest
-                elif name.suffix.lower() == '.manifest':
-                    match = re.fullmatch(r'(\d+)_(\d+)\.manifest', name.name)
-                    if match:
-                        pair = tuple(map(int, match.groups()))
-                        blob = archive.read(info)
-                        if pair in manifests and manifests[pair] != blob: raise ValueError('Conflicting manifest files.')
-                        manifests[pair] = blob
-    except (zipfile.BadZipFile, UnicodeError) as error:
-        raise ValueError('Provider returned an invalid manifest pack.') from error
+    app_ids=set();depot_names={}
+    def read_lua(lua):
+        if len(lua)>2*1024*1024:raise ValueError('Lua metadata exceeds the size limit.')
+        encoding='utf-16' if lua.startswith((b'\xff\xfe',b'\xfe\xff')) else 'utf-8-sig'
+        try:text=lua.decode(encoding)
+        except UnicodeError as error:raise ValueError('Unsupported Lua metadata encoding.') from error
+        # Data extraction only: never import, evaluate or execute provider scripts.
+        for line in text.splitlines():
+            label=re.search(r'addappid\s*\(\s*(\d+).*?\)\s*--\s*(.+)$',line)
+            if label:depot_names[int(label[1])]=label[2].strip()[:200]
+        app_ids.update(map(int,re.findall(r'addappid\s*\(\s*(\d+)\s*(?:\)|,)',text)))
+        for depot,key in re.findall(r"addappid\s*\(\s*(\d+)\s*,\s*\d+\s*,\s*['\"]([0-9a-fA-F]{64})['\"]\s*\)",text):
+            depot=int(depot)
+            if not 0<depot<2**32:raise ValueError('Invalid depot ID.')
+            if depot in keys and keys[depot]!=key.lower():raise ValueError('Conflicting depot keys.')
+            keys[depot]=key.lower()
+        for match in re.finditer(r"setManifestid\s*\(\s*(\d+)\s*,\s*(?:['\"](\d+)['\"]|(\d+))",text):
+            depot=int(match[1]);manifest=int(match[2] or match[3])
+            if not 0<depot<2**32 or not 0<manifest<2**64:raise ValueError('Invalid manifest pin.')
+            if depot in pins and pins[depot]!=manifest:raise ValueError('Conflicting manifest pins.')
+            pins[depot]=manifest
+    if not zipfile.is_zipfile(io.BytesIO(data)):
+        if data.lstrip().lower().startswith((b'<!doctype',b'<html',b'{',b'[')) or data.startswith((b'Rar!',b'7z\xbc\xaf\x27\x1c')):
+            kind='HTML page' if data.lstrip().lower().startswith((b'<!doctype',b'<html')) else 'JSON response' if data.lstrip().startswith((b'{',b'[')) else 'unsupported archive'
+            raise ValueError(f'Provider returned a {kind} instead of Lua metadata or a ZIP manifest pack.')
+        read_lua(data)
+    else:
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                if len(archive.infolist())>4096 or sum(item.file_size for item in archive.infolist())>MAX_PACK:
+                    raise ValueError('Manifest pack exceeds the expanded size limit.')
+                for item in archive.infolist():
+                    normalized=item.filename.replace('\\','/')
+                    name=PurePosixPath(normalized)
+                    if name.is_absolute() or '..' in name.parts or ':' in normalized or normalized in names or (item.external_attr>>16)&0o170000==0o120000:
+                        raise ValueError('Unsafe manifest pack entry.')
+                    names.add(normalized)
+                    if item.is_dir():continue
+                    if name.suffix.lower()=='.lua':read_lua(archive.read(item))
+                    elif name.suffix.lower()=='.manifest':
+                        match=re.fullmatch(r'(\d+)_(\d+)\.manifest',name.name)
+                        if match:
+                            pair=tuple(map(int,match.groups()));blob=archive.read(item)
+                            if pair in manifests and manifests[pair]!=blob:raise ValueError('Conflicting manifest files.')
+                            manifests[pair]=blob
+        except (zipfile.BadZipFile,UnicodeError) as error:raise ValueError('Provider returned an invalid manifest pack.') from error
     if app not in app_ids:
         raise ValueError("Manifest pack does not declare the requested Steam App ID.")
     rows = []
@@ -165,15 +168,19 @@ def parse_pack(data, app):
             raise ValueError('Invalid depot or manifest in pack.')
         if depot in pins and pins[depot] != manifest: continue
         rows.append(Depot(depot, manifest, blob, keys.get(depot), depot_names.get(depot, '')))
-    if not rows: raise ValueError('No usable binary depot manifests were found in this pack.')
+    binary_ids={row.id for row in rows}
+    for depot in sorted((keys.keys()|pins.keys())-binary_ids):
+        rows.append(Depot(depot,pins.get(depot),b'',keys.get(depot),depot_names.get(depot,'')))
+    if not rows:raise ValueError('No usable depot keys or manifests were found in the provider response.')
     return rows
 
 
 def prepare_depot(row, directory):
     directory = Path(directory)
     directory.mkdir(mode=0o700)
-    (directory / 'manifest.bin').write_bytes(row.data)
-    (directory / 'manifest.bin').chmod(0o644)
+    if row.data:
+        (directory/'manifest.bin').write_bytes(row.data)
+        (directory/'manifest.bin').chmod(0o644)
     if row.key:
         (directory / 'depot.keys').write_text(f'{row.id};{row.key}\n')
         (directory / 'depot.keys').chmod(0o644)
