@@ -219,3 +219,9 @@ The downloader opens a separate live log window with a Copy log action. Manifest
 lookups, readiness checks, errors and worker output stay available across attempts.
 The selection window has no visible progress bar; download progress remains in
 the Downloads panel.
+
+Closing plugin settings or the downloader releases the isolated VPN when no
+queued or active downloads remain. Waiting and running downloads keep it alive.
+The queue automatically releases the connection when its last download completes,
+fails or is cancelled, including when the downloader window stays open.
+Authentication popups do not release the connection when closed.

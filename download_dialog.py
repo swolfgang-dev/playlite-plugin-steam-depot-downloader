@@ -687,6 +687,8 @@ class DownloadDialog(QDialog):
             if hasattr(window,'download_queue'):
                 from .queue_runner import QueueRunner
                 network=self.network
+                from .vpn_lifecycle import watch_queue
+                watch_queue(network,window.download_queue)
                 snapshot={'app':self.pack_app,'rows':list(self.rows),'plan':list(plan),'info':self.content_info,'username':self.username.text(),'branch':branch}
                 try:
                     window.download_queue.enqueue(self.game_name or self.content_info['game']['name'],self.destination.text(),
@@ -947,15 +949,9 @@ class DownloadDialog(QDialog):
         self.search_timer.stop()
         self.moon.session = None
         self.rows = []
-        queue=vars(self.network).get('download_queue')
-        queued=queue is not None and any(row.state in ('Queued','Downloading') for row in queue.entries)
-        if self.owns_connection and not queued:
-            self.network.cancel()
-            from .plugin import Job
-            job=Job(self.network.disconnect)
-            self.jobs.add(job)
-            job.signals.finished.connect(lambda _:self.jobs.discard(job))
-            QThreadPool.globalInstance().start(job)
+        if not self.authentication and not getattr(self,'queue_runner',False):
+            from .vpn_lifecycle import disconnect_when_idle
+            disconnect_when_idle(self.network)
         self.key.clear(); self.response.clear()
         if self.authentication == 'steam':
             self.password.clear(); self.pending_password = ''

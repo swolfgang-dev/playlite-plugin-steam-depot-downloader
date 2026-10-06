@@ -227,31 +227,16 @@ class Plugin(GenericPlugin):
 
     def close_settings(self, widget):
         widget.settings_closed = True
-        queue=getattr(self.network,'download_queue',None)
-        if queue is not None and any(row.state in ('Queued','Downloading') for row in queue.entries):
-            def idle():
-                if not any(row.state in ('Queued','Downloading') for row in queue.entries):
-                    queue.changed.disconnect(idle)
-                    if not self.busy:self.disconnect_after_settings()
-            queue.changed.connect(idle)
+        from .vpn_lifecycle import has_downloads,disconnect_when_idle
+        if has_downloads(self.network):
+            disconnect_when_idle(self.network)
             return
         self.network.cancel()
-        if not self.busy:
-            self.disconnect_after_settings()
+        if not self.busy:self.disconnect_after_settings()
 
     def disconnect_after_settings(self):
-        # A queued download owns the tunnel until its workers have finished.
-        queue=vars(self.network).get('download_queue')
-        if queue is not None and any(row.state in ('Queued','Downloading') for row in queue.entries):return
-        # Wait for an in-flight operation to finish before removing its container.
-        self.busy = True
-        job = Job(self.network.disconnect)
-        self.jobs.add(job)
-        def finished(_):
-            self.busy = False
-            self.jobs.discard(job)
-        job.signals.finished.connect(finished)
-        QThreadPool.globalInstance().start(job)
+        from .vpn_lifecycle import disconnect_when_idle
+        disconnect_when_idle(self.network)
 
     def stop(self, widget):
         if self.busy:
