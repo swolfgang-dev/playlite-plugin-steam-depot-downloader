@@ -35,7 +35,8 @@ const SteamClient={Apps:{GetAvailableCompatTools:async()=>[{strToolName:'proton_
             for call in result['calls']:
                 if call[0] in ('remove','queue','resume','enable'):self.assertEqual(call[-1],'0')
             names=[call[0] for call in result['calls']]
-            self.assertEqual('remove' in names,paused);self.assertEqual('queue' in names,paused)
+            self.assertEqual('remove' in names,paused);self.assertIn('queue',names)
+            self.assertLess(names.index('queue'),names.index('resume'))
             if paused:
                 self.assertLess(names.index('remove'),names.index('queue'))
                 self.assertLess(names.index('queue'),names.index('resume'))

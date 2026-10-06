@@ -87,7 +87,7 @@ class SteamRuntime:
             raise RuntimeError('Could not start isolated Steam: '+(launched.stderr.strip() or 'Docker rejected the container launch.'))
         return 'Starting isolated Steam environment. Refresh status in a moment.'
 
-    def request(self,command,appid=None,*,platform=None,language='english',dlc=None,eula_id=None,eula_version=None):
+    def request(self,command,appid=None,*,platform=None,language='english',dlc=None,eula_id=None,eula_version=None,recover_paused=False):
         if command not in ('authentication_status','start','status','stop','install_moon','add','add_status','cancel_add','install','download_status','pause','eula_status','eula_accept','installed_games','uninstall','retail_selection','has_game','finish_export'):raise ValueError('Unknown runtime action.')
         if command=='install' and platform not in ('windows','linux'):
             raise ValueError('Select Windows or Linux for isolated Steam. macOS is unavailable.')
@@ -103,7 +103,7 @@ class SteamRuntime:
             finally:os.close(directory)
             payload={'command':command,'appid':appid}
             if command=='eula_accept':payload.update(eula_id=eula_id,eula_version=eula_version)
-            if command=='install':payload.update(platform=platform,language=language,dlc=dlc or [])
+            if command=='install':payload.update(platform=platform,language=language,dlc=dlc or [],recover_paused=recover_paused)
             connection.sendall(json.dumps(payload).encode()+b'\n')
             data=b''
             while not data.endswith(b'\n'):

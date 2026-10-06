@@ -116,8 +116,8 @@ if(!folder)throw Error('The isolated download library is unavailable');
 const installed=folders.some(f=>f.vecApps.some(a=>a.nAppID===r.appid));
 stage='installation';
 if(installed){
- if(r.restart_paused)await SteamClient.Downloads.QueueAppUpdate(r.appid,'0');
- if(r.restart_paused)await SteamClient.Downloads.EnableAllDownloads(true,'0');
+ await SteamClient.Downloads.QueueAppUpdate(r.appid,'0');
+ await SteamClient.Downloads.EnableAllDownloads(true,'0');
  await SteamClient.Downloads.ResumeAppUpdate(r.appid,'0');
 }
 else{

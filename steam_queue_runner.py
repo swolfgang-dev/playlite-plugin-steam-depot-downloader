@@ -9,6 +9,25 @@ from PyQt6.QtCore import QObject,QSettings,QThreadPool
 from .steam_runtime import SteamRuntime
 
 
+class PausedRecovery:
+    """Recover once, only after an unchanged paused download for 30 seconds."""
+    def __init__(self):
+        self.since=None;self.position=None;self.used=False
+
+    def needed(self,state,now):
+        position=(state.get('downloaded',0),state.get('disk_processed',0))
+        paused=bool(int(state.get('flags',0)) & 512)
+        if not paused or state.get('installed') or state.get('export_pending'):
+            self.since=None;self.position=position
+            return False
+        if self.since is None or position!=self.position:
+            self.since=now;self.position=position
+        if not self.used and now-self.since>=30:
+            self.used=True
+            return True
+        return False
+
+
 def persisted_snapshot(snapshot):
     """Retain install choices and public platform metadata, never provider secrets."""
     from .app_info import depot_entries
@@ -184,10 +203,17 @@ class SteamQueueRunner(QObject):
                 configured=True
                 registered_deadline=time.monotonic()+180
                 seen_events=set(previous_events);samples=[];agreement_check=0;activity_seen=False
+                recovery=PausedRecovery()
                 while True:
                     if self.cancelled.is_set():raise RuntimeError('Cancelled')
                     self.network.check()
                     state=self.runtime.request('download_status',app)
+                    if recovery.needed(state,time.monotonic()):
+                        progress('Steam did not resume after 30 seconds · restarting the stuck attempt with partial files retained')
+                        installation=self.runtime.request('install',app,platform=platform,language=self.snapshot['language'],dlc=self.snapshot['dlc'],recover_paused=True)
+                        previous_events.update(installation.get('previous_events',[]))
+                        registered_deadline=time.monotonic()+180
+                        continue
                     current_events=[event for event in state.get('events',[]) if event not in previous_events]
                     activity_seen=activity_seen or bool(current_events) or bool(int(state.get('flags',0)) & 1024) or bool(state.get('export_pending'))
                     failure=download_failure(state,previous_events)

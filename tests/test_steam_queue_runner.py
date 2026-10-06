@@ -6,7 +6,7 @@ import test_worker
 from PyQt6.QtWidgets import QApplication,QWidget
 from playlite.downloads import DownloadQueue
 from downloader.download_dialog import DownloadDialog
-from downloader.steam_queue_runner import SteamQueueRunner,verify_platform,export_install,persisted_snapshot
+from downloader.steam_queue_runner import SteamQueueRunner,verify_platform,export_install,persisted_snapshot,PausedRecovery
 
 
 def metadata():
@@ -16,6 +16,22 @@ def metadata():
 
 
 class SteamQueueTests(unittest.TestCase):
+    def test_paused_recovery_waits_for_stall_and_runs_only_once(self):
+        recovery=PausedRecovery()
+        state={'flags':1538,'downloaded':100}
+        self.assertFalse(recovery.needed(state,0))
+        self.assertFalse(recovery.needed(state,29))
+        state['downloaded']=200
+        self.assertFalse(recovery.needed(state,30))
+        self.assertFalse(recovery.needed(state,59))
+        self.assertTrue(recovery.needed(state,60))
+        self.assertFalse(recovery.needed(state,100))
+
+    def test_resumed_download_never_triggers_recovery(self):
+        recovery=PausedRecovery()
+        self.assertFalse(recovery.needed({'flags':512},0))
+        self.assertFalse(recovery.needed({'flags':1024},10))
+        self.assertFalse(recovery.needed({'flags':1024},100))
     def test_persisted_choices_exclude_provider_credentials_and_depot_keys(self):
         info=metadata();info['api_key']='secret';info['game']['depots']['11']['key']='secret'
         snapshot=persisted_snapshot({'app':10,'platform':'windows','language':'english','dlc':[],'info':info})

@@ -405,7 +405,9 @@ def dispatch(request):
             raise RuntimeError('LuaMoon must finish adding this App ID before installation.')
         if not steam_running():raise RuntimeError('Start isolated Steam first.')
         previous_events=content_events(app)
-        response=steam_action({'action':'install','appid':app,'platform':request['platform'],'dlc':dlc,'language':language,'restart_paused':paused_install(app)})
+        recover=request.get('recover_paused',False)
+        if type(recover) is not bool:raise ValueError('Invalid paused download recovery selection.')
+        response=steam_action({'action':'install','appid':app,'platform':request['platform'],'dlc':dlc,'language':language,'restart_paused':recover and paused_install(app)})
         response['previous_events']=previous_events
         return response
     if command=='retail_selection':
