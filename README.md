@@ -152,3 +152,17 @@ cancelling the current game, inspecting progress/status, opening completed folde
 and adding completed games to Playlite. Queue history is in memory for this app
 session; closing Playlite cancels pending jobs rather than persisting credentials or
 manifest keys to a queue file.
+
+DLC names use native Steam metadata, cached names, Steam Store metadata, matching
+provider depot names, and accessible SteamDB page titles with a verified App ID.
+There are no individual DLC title overrides. Successful names are cached for 30
+days; unsuccessful lookups for one hour. External name lookups share a budget of
+eight requests per game and use the isolated VPN. Unresolved entries show
+**Unknown DLC (App ID)**; a hidden or unnamed store listing alone does not prove
+that its content cannot download.
+
+DLC tooltips distinguish available manifests from additional provider requests.
+Selected manifests are prepared before queueing; failures are displayed on the
+DLC while preserving its selection so the user can retry or explicitly uncheck it.
+Manifest presence does not confirm Steam/CDN access. Authentication, CDN access,
+network interruptions, and filesystem errors can still fail during a download.

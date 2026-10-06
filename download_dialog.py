@@ -560,12 +560,15 @@ class DownloadDialog(QDialog):
         for entry in self.content_info['dlc']:
             depots = content_depots(self.content_info,entry)
             applicable = any(matches_platform(row,platform) for row in depots.values())
-            reason = 'Included in base-game files' if not depots else 'Unavailable for this platform' if not applicable else ''
-            item=QListWidgetItem(entry['name'] or f'DLC {entry["id"]}')
+            reason = 'Included in base-game files' if not depots else 'Unavailable for this platform' if not applicable else 'Manifest request failed' if entry.get('manifest_error') and entry.get('manifest_provider')==getattr(self,'pack_source',None) else ''
+            item=QListWidgetItem(entry['name'] or f'Unknown DLC ({entry["id"]})')
             item.setData(Qt.ItemDataRole.UserRole,entry['id'])
-            item.setToolTip(reason or 'Download this DLC with the base game. Manifest availability is checked before downloading.')
-            if reason:
-                item.setText(item.text()+' · '+reason)
+            required={key for key,row in depots.items() if matches_platform(row,platform)}
+            available={row.id for row in self.rows}
+            availability=entry.get('manifest_error','') if reason=='Manifest request failed' else reason or ('Required manifests are available. Steam/CDN access has not been tested.' if required<=available else 'Extra manifests are needed; the provider will be checked before queueing. Steam/CDN access has not been tested.')
+            item.setToolTip(('Name could not be resolved from accessible metadata sources. ' if not entry['name'] else '')+availability+(' Refresh the manifest pack under Advanced to retry.' if reason=='Manifest request failed' else ''))
+            if reason:item.setText(item.text()+' · '+reason)
+            if reason and reason!='Manifest request failed':
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
             else:
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -612,7 +615,10 @@ class DownloadDialog(QDialog):
                 self.status.setText('Added to Downloads. You can choose another game or close this window.')
                 window.downloads_panel.set_open(True)
             else:self.download()
-        self.task(operation,done,on_error=lambda _:self.progress_info.setText('Nothing added to queue. Manifest preparation failed.'))
+        def failed(message):
+            self.progress_info.setText('Nothing added to queue. Manifest preparation failed.')
+            self.update_dlc_list()
+        self.task(operation,done,on_error=failed)
 
     def download(self):
         if self.busy: return

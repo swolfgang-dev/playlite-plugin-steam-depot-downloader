@@ -7,8 +7,9 @@ from downloader.providers import Depot
 
 class DlcNameTests(unittest.TestCase):
     def setUp(self):
-        self.overrides=patch('downloader.dlc_names.NAME_OVERRIDES',{})
-        self.overrides.start();self.addCleanup(self.overrides.stop)
+        self.cache=Mock();self.cache.read.return_value=None
+        self.resolver=patch('downloader.dlc_names.NameCache',return_value=self.cache)
+        self.resolver.start();self.addCleanup(self.resolver.stop)
 
     def info(self):
         return {'game':{'id':597220,'name':'West of Loathing','depots':{'686420':{'dlcappid':'686420','manifests':{'public':{'gid':'1'}}}}},'dlc':[{'id':686420,'name':'','depots':{}}]}
@@ -36,17 +37,27 @@ class DlcNameTests(unittest.TestCase):
     def test_missing_name_requests_are_bounded(self):
         info=self.info();info['dlc']=[{'id':i,'name':'','depots':{}} for i in range(1,100)]
         search=Mock();search.details.side_effect=ValueError('Missing')
-        resolve_names(info,[],search);self.assertEqual(search.details.call_count,8)
+        resolve_names(info,[],search);self.assertEqual(search.details.call_count+search.secondary_name.call_count,8)
 
-class HiddenDlcTitleTests(unittest.TestCase):
-    def test_real_horse_armor_entry_resolves_without_unavailable_store_page(self):
-        info={'game':{'id':597220,'depots':{}},'dlc':[{'id':686420,'name':'','depots':{}}]}
-        search=Mock();search.details.side_effect=ValueError('No store page')
-        resolve_names(info,[],search)
-        self.assertEqual(info['dlc'][0]['name'],'West of Loathing: Horse Armor')
-        search.details.assert_not_called()
+    def test_secondary_source_handles_any_app_id(self):
+        info=self.info();info['dlc'][0]['id']=12345
+        search=Mock();search.details.side_effect=ValueError('Missing')
+        search.secondary_name.return_value='Example Expansion'
+        self.assertEqual(resolve_names(info,[],search)['dlc'][0]['name'],'Example Expansion')
+        search.secondary_name.assert_called_once_with(12345)
 
-    def test_override_does_not_apply_to_an_unrelated_game(self):
-        info={'game':{'id':99,'depots':{}},'dlc':[{'id':686420,'name':'','depots':{}}]}
-        search=Mock();search.details.side_effect=ValueError('No store page')
-        self.assertEqual(resolve_names(info,[],search)['dlc'][0]['name'],'')
+    def test_cached_title_avoids_requests(self):
+        self.cache.read.return_value='Cached Expansion';search=Mock()
+        self.assertEqual(resolve_names(self.info(),[],search)['dlc'][0]['name'],'Cached Expansion')
+        search.details.assert_not_called();search.secondary_name.assert_not_called()
+
+    def test_cached_failure_avoids_requests(self):
+        self.cache.read.return_value='';search=Mock()
+        self.assertEqual(resolve_names(self.info(),[],search)['dlc'][0]['name'],'')
+        search.details.assert_not_called();search.secondary_name.assert_not_called()
+
+    def test_source_failures_are_cached(self):
+        search=Mock();search.details.side_effect=ValueError('Missing')
+        search.secondary_name.side_effect=RuntimeError('Browser challenge')
+        resolve_names(self.info(),[],search)
+        self.cache.save.assert_called_once_with(686420,'')

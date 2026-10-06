@@ -95,6 +95,23 @@ class ChecklistTests(unittest.TestCase):
         self.assertTrue(dialog.dlc_list.item(2).flags() & Qt.ItemFlag.ItemIsUserCheckable)
         dialog.close()
 
+    def test_failed_manifest_keeps_selection_and_explains_failure(self):
+        from PyQt6.QtCore import Qt
+        dialog=self.dialog();dialog.pack_source='Hubcap'
+        dialog.dlc_list.item(0).setCheckState(Qt.CheckState.Checked)
+        dialog.content_info['dlc'][0].update(manifest_error='Provider unavailable',manifest_provider='Hubcap')
+        dialog.update_dlc_list();item=dialog.dlc_list.item(0)
+        self.assertIn('Manifest request failed',item.text())
+        self.assertIn('Provider unavailable',item.toolTip())
+        self.assertTrue(item.flags() & Qt.ItemFlag.ItemIsEnabled)
+        self.assertEqual(item.checkState(),Qt.CheckState.Checked)
+        dialog.close()
+
+    def test_manifest_presence_does_not_claim_cdn_access(self):
+        dialog=self.dialog()
+        self.assertIn('Steam/CDN access has not been tested',dialog.dlc_list.item(0).toolTip())
+        dialog.close()
+
     def test_intermediate_success_does_not_publish_and_final_success_does(self):
         import tempfile
         from pathlib import Path

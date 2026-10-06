@@ -136,6 +136,7 @@ def prepare_content(info, base_rows, platform, selected, source, fetch):
         if required-available:
             try:packs[entry['id']]=fetch(entry['id'])
             except Exception as error:
+                entry['manifest_error']=str(error);entry['manifest_provider']=source
                 title=entry['name'] or f'DLC {entry["id"]}'
                 raise RuntimeError(f'{source} could not fetch manifests for {title} (App ID {entry["id"]}). {error} Unselect this DLC, or choose another manifest provider under Advanced.') from error
     return build_plan(info,packs,platform,selected)

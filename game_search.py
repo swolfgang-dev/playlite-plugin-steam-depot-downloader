@@ -33,6 +33,18 @@ class GameSearch:
             raise ValueError('Steam could not find that App ID.')
         return {'id':app,'name':entry['data']['name']}
 
+    def secondary_name(self, app):
+        """Use an accessible SteamDB title only when its embedded App ID matches."""
+        if type(app)!=int or not 0<app<2**32:raise ValueError('Invalid Steam App ID.')
+        import html,re
+        body=self.transport.request(f'https://steamdb.info/app/{app}/')
+        if len(body)>2*1024*1024:raise ValueError('Metadata page exceeds size limit.')
+        match=re.search(r'<title[^>]*>(.*?)</title>',body.decode('utf-8',errors='replace'),re.I|re.S)
+        if not match:return ''
+        title=html.unescape(re.sub(r'<[^>]+>','',match[1])).strip()
+        match=re.fullmatch(r'(.+?)\s*\(App (\d+)\)\s*·\s*SteamDB',title)
+        return match[1].strip() if match and int(match[2])==app else ''
+
     def cover(self, app):
         if app in self.cache: return self.cache[app]
         if type(app) != int or not 0 < app < 2**32: raise ValueError('Invalid Steam App ID.')

@@ -1,10 +1,23 @@
-"""Resolve missing DLC titles without guessing from unrelated base-game depots."""
+"""General, cached DLC name resolution; names do not imply download availability."""
 import re
 import json
-from pathlib import Path
-
-NAME_OVERRIDES=json.loads(Path(__file__).with_name('dlc_name_overrides.json').read_text())
+import time
+from PyQt6.QtCore import QSettings
 from .app_info import content_depots
+
+
+class NameCache:
+    def __init__(self):self.settings=QSettings('Playlite','SteamDownloader')
+    def read(self, app):
+        try:
+            item=json.loads(self.settings.value(f'dlcNames/{app}','null'))
+            if not isinstance(item,dict):return None
+            age=time.time()-item['time'];ttl=30*86400 if item.get('name') else 3600
+            if 0<=age<ttl and isinstance(item.get('name'),str):return item['name']
+        except (ValueError,TypeError,KeyError):pass
+        return None
+    def save(self,app,name):
+        self.settings.setValue(f'dlcNames/{app}',json.dumps({'name':name,'time':time.time()}))
 
 
 def depot_title(label, app):
@@ -16,23 +29,31 @@ def depot_title(label, app):
     return label
 
 
-def resolve_names(info, rows, search):
-    requests=0
+def resolve_names(info, rows, search, cache=None):
+    cache=cache if cache is not None else NameCache();requests=0
     for entry in info['dlc']:
-        if entry['name'].strip():continue
-        override=NAME_OVERRIDES.get(str(entry['id']),{})
-        title=override.get('name','') if override.get('parent_app')==info['game']['id'] else ''
-        if not title and requests<8:
-            requests+=1
-            try:title=search.details(entry['id'])['name'].strip()
-            except Exception:pass  # A missing store page must not block downloading.
+        if entry['name'].strip():
+            cache.save(entry['id'],entry['name']);continue
+        cached=cache.read(entry['id']);title=cached or '';attempted=False
+        if cached is None and requests<8:
+            requests+=1;attempted=True
+            try:
+                candidate=search.details(entry['id'])['name']
+                if isinstance(candidate,str):title=candidate.strip()
+            except Exception:pass
         if not title:
             related=content_depots(info,entry)
             candidates=[row.name for row in rows if row.id in related]
             candidates.extend(row.get('name','') for row in related.values())
             for candidate in candidates:
-                if not isinstance(candidate,str):continue
-                title=depot_title(candidate,entry['id'])
+                if isinstance(candidate,str):title=depot_title(candidate,entry['id'])
                 if title:break
-        if title:entry['name']=title
+        if not title and cached is None and requests<8:
+            requests+=1;attempted=True
+            try:
+                candidate=search.secondary_name(entry['id'])
+                if isinstance(candidate,str):title=candidate.strip()
+            except Exception:pass
+        if title:entry['name']=title;cache.save(entry['id'],title)
+        elif cached is None and attempted:cache.save(entry['id'],'')
     return info

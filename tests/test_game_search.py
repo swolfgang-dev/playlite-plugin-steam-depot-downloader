@@ -50,3 +50,14 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(GameSearch(transport).cover(123),b'capsule')
         self.assertIn('capsule_231x87.jpg',transport.request.call_args.args[0])
         self.assertEqual(transport.request.call_count,2)
+
+class SecondaryNameTests(unittest.TestCase):
+    def test_title_must_match_requested_app(self):
+        transport=Mock();search=GameSearch(transport)
+        transport.request.return_value=b'<title>Example &amp; Expansion (App 12345) \xc2\xb7 SteamDB</title>'
+        self.assertEqual(search.secondary_name(12345),'Example & Expansion')
+        self.assertEqual(search.secondary_name(54321),'')
+
+    def test_challenge_page_is_not_a_name(self):
+        transport=Mock();transport.request.return_value=b'<title>Just a moment...</title>'
+        self.assertEqual(GameSearch(transport).secondary_name(12345),'')
