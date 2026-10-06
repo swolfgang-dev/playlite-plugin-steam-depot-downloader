@@ -198,7 +198,7 @@ class DownloadDialog(QDialog):
             form.insertRow(form.getWidgetPosition(self.dlc_list)[0]+1, self.dlc_note)
             self.depot.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
             self.depot.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
-            self.start_button.setText('Download')
+            self.start_button.setText('Add to queue' if hasattr(parent,'download_queue') else 'Download')
             self.progress_bar = QProgressBar(); self.progress_bar.setRange(0,1000)
             self.progress_bar.setValue(0); self.progress_bar.setFormat('%p%')
             self.progress_info = QLabel('Ready to choose a game')
@@ -590,7 +590,21 @@ class DownloadDialog(QDialog):
         def done(plan):
             self.content_plan=plan; self.content_index=0
             self.total_downloaded=0; self.total_uncompressed=0; self.batch_started_at=time.monotonic()
-            self.download()
+            window=self.parentWidget()
+            if hasattr(window,'download_queue'):
+                from .queue_runner import QueueRunner
+                network=self.network
+                snapshot={'app':self.pack_app,'rows':list(self.rows),'plan':list(plan),'info':self.content_info,'username':self.username.text()}
+                try:
+                    window.download_queue.enqueue(self.game_name or self.content_info['game']['name'],self.destination.text(),
+                        lambda queue,entry:QueueRunner(network,window,queue,entry,snapshot))
+                except ValueError as error:
+                    self.status.setText(str(error));return
+                self.owns_connection=False
+                self.network.download_queue=window.download_queue
+                self.status.setText('Added to Downloads. You can choose another game or close this window.')
+                window.downloads_panel.set_open(True)
+            else:self.download()
         self.task(operation,done)
 
     def download(self):
@@ -835,7 +849,9 @@ class DownloadDialog(QDialog):
         self.search_timer.stop()
         self.moon.session = None
         self.rows = []
-        if self.owns_connection:
+        queue=vars(self.network).get('download_queue')
+        queued=queue is not None and any(row.state in ('Queued','Downloading') for row in queue.entries)
+        if self.owns_connection and not queued:
             self.network.cancel()
             from .plugin import Job
             job=Job(self.network.disconnect)

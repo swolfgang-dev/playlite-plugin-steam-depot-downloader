@@ -139,3 +139,13 @@ Search waits 650 ms after typing, requires three characters, and shows at most e
 results with cover artwork. Numeric IDs bypass search. Covers are cached for up
 to 32 games per dialog; changing the query stops the old cover queue. Search and
 artwork requests use the verified isolated VPN transport.
+
+With an updated Playlite core, **Add to queue** transfers a prepared game download
+into the application Downloads tray. The selection window is non-modal and can
+close while queued downloads continue. Games run sequentially, with their base-game
+and selected DLC depots grouped together. Closing plugin settings defers VPN cleanup
+while downloads are queued or active. The tray supports removing waiting games,
+cancelling the current game, inspecting progress/status, opening completed folders,
+and adding completed games to Playlite. Queue history is in memory for this app
+session; closing Playlite cancels pending jobs rather than persisting credentials or
+manifest keys to a queue file.

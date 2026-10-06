@@ -53,7 +53,10 @@ class Plugin(GenericPlugin):
     def main_menu_actions(self, window):
         def open_downloader():
             from .download_dialog import DownloadDialog
-            DownloadDialog(self.network, window).exec()
+            existing=next((dialog for dialog in window.findChildren(DownloadDialog) if not getattr(dialog,'queue_runner',False) and not dialog.authentication and dialog.isVisible()),None)
+            dialog=existing or DownloadDialog(self.network,window)
+            dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            dialog.show();dialog.raise_();dialog.activateWindow()
         return [('Steam Depot Downloader…', open_downloader)]
 
     def settings(self):
@@ -224,11 +227,22 @@ class Plugin(GenericPlugin):
 
     def close_settings(self, widget):
         widget.settings_closed = True
+        queue=getattr(self.network,'download_queue',None)
+        if queue is not None and any(row.state in ('Queued','Downloading') for row in queue.entries):
+            def idle():
+                if not any(row.state in ('Queued','Downloading') for row in queue.entries):
+                    queue.changed.disconnect(idle)
+                    if not self.busy:self.disconnect_after_settings()
+            queue.changed.connect(idle)
+            return
         self.network.cancel()
         if not self.busy:
             self.disconnect_after_settings()
 
     def disconnect_after_settings(self):
+        # A queued download owns the tunnel until its workers have finished.
+        queue=vars(self.network).get('download_queue')
+        if queue is not None and any(row.state in ('Queued','Downloading') for row in queue.entries):return
         # Wait for an in-flight operation to finish before removing its container.
         self.busy = True
         job = Job(self.network.disconnect)
