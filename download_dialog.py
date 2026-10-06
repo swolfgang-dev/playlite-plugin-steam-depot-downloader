@@ -519,7 +519,9 @@ class DownloadDialog(QDialog):
             from .app_info import fetch_app_info
             info = fetch_app_info(self.network, app, username)
             credential = self.moon.token() if source == 'Luie' else (HubcapKeyWallet().read() or {}).get('key','') if source == 'Hubcap' else ''
-            return self.transport.fetch(source, app, credential), info
+            rows=self.transport.fetch(source, app, credential)
+            from .dlc_names import resolve_names
+            return rows, resolve_names(info,rows,self.game_search)
         def done(result):
             rows, info = result
             QSettings('Playlite','SteamDownloader').setValue('manifest_provider',source)
