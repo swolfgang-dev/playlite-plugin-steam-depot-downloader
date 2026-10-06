@@ -587,7 +587,7 @@ class DownloadDialog(QDialog):
             self.depot.blockSignals(True); self.depot.clear()
             from .app_info import content_depots, matches_platform
             advertised={os.strip() for row in content_depots(info).values() for os in str(row.get('config',{}).get('oslist','')).split(',') if os.strip()}
-            for platform, label in (('linux','Linux'),('windows','Windows'),('macos','macOS')):
+            for platform, label in (('windows','Windows'),('linux','Linux'),('macos','macOS')):
                 if (not advertised or platform in advertised) and any(not str(row.get('config',{}).get('oslist','')) or platform in str(row.get('config',{}).get('oslist','')).split(',') for row in content_depots(info).values()):
                     self.depot.addItem(label,platform)
             self.depot.blockSignals(False)
