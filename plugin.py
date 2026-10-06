@@ -13,6 +13,7 @@ class Signals(QObject):
 class Job(QRunnable):
     def __init__(self, function):
         super().__init__()
+        self.setAutoDelete(False)
         self.function = function
         self.signals = Signals()
     def run(self):

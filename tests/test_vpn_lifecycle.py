@@ -18,6 +18,15 @@ class LifecycleTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
         self.pool.globalInstance.return_value.start.side_effect=lambda job:job.run()
 
+    def test_finished_disconnect_releases_job_after_signal_dispatch(self):
+        from PyQt6.QtWidgets import QApplication
+        app=QApplication.instance() or QApplication([])
+        disconnect_when_idle(self.network)
+        self.assertIsNotNone(self.network._disconnect_job)
+        self.assertFalse(self.network._disconnect_job.autoDelete())
+        app.processEvents()
+        self.assertIsNone(self.network._disconnect_job)
+
     def test_idle_close_disconnects_even_without_connection_ownership(self):
         disconnect_when_idle(self.network)
         self.network.disconnect.assert_called_once()

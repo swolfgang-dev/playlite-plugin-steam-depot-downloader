@@ -73,7 +73,14 @@ def disconnect_when_idle(network):
         return 'Disconnected'
     job=Job(disconnect)
     network._disconnect_job=job
-    def finished(_):network._disconnect_job=None
+    def finished(_):
+        # Keep the runnable and its signal owner alive until Qt has finished
+        # delivering this signal. Releasing the last reference inside the
+        # connected callback can destroy the signal while it is being emitted.
+        def release():
+            if vars(network).get('_disconnect_job') is job:
+                network._disconnect_job=None
+        QTimer.singleShot(0,release)
     job.signals.finished.connect(finished)
     QThreadPool.globalInstance().start(job)
 
