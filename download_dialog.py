@@ -511,7 +511,7 @@ class DownloadDialog(QDialog):
             self.busy = False; self.set_content_enabled(True); self.jobs.discard(job)
             if getattr(self,'vpn_connecting',False):
                 self.vpn_connecting=False;self.cancel.setText('Close')
-            self.fetch.setEnabled(True); self.start_button.setEnabled(bool(self.authentication or self.rows))
+            self.fetch.setEnabled(True); self.start_button.setEnabled(bool(self.authentication or self.rows or (self.content_info and self.depot.count())))
             if result:
                 try: completed(result[0])
                 except Exception as error: self.status.setText(str(error))
@@ -520,12 +520,17 @@ class DownloadDialog(QDialog):
                 if on_error:on_error(message)
         job.signals.finished.connect(done)
         job.signals.progress.connect(self.status.setText)
+        if progress and not self.authentication:job.signals.progress.connect(self.log.appendPlainText)
         self.status.setText('Working through the isolated VPN…')
         QThreadPool.globalInstance().start(job)
 
     def login(self):
         code = self.code.text(); self.code.clear()
         self.task(lambda: self.moon.login(code), self.status.setText)
+
+    def fetch_manifest(self,source,app):
+        credential=self.moon.token() if source=='Luie' else (HubcapKeyWallet().read() or {}).get('key','') if source=='Hubcap' else ''
+        return self.transport.fetch(source,app,credential)
 
     def fetch_pack(self):
         try:
@@ -540,8 +545,10 @@ class DownloadDialog(QDialog):
         def operation():
             from .app_info import fetch_app_info,resolve_shared
             info = resolve_shared(fetch_app_info(self.network, app, username),lambda shared:fetch_app_info(self.network,shared,username))
-            credential = self.moon.token() if source == 'Luie' else (HubcapKeyWallet().read() or {}).get('key','') if source == 'Hubcap' else ''
-            rows=self.transport.fetch(source, app, credential)
+            from .manifest_resolver import ManifestResolver
+            resolver=ManifestResolver(source,self.fetch_manifest)
+            rows=resolver.first_pack(app)
+            info['_manifest_source']=getattr(resolver,'first_source',source)
             from .dlc_names import resolve_names
             return rows, resolve_names(info,rows,self.game_search)
         def done(result):
@@ -573,7 +580,7 @@ class DownloadDialog(QDialog):
             self.default_dlc_selection={entry['id'] for entry in info['dlc'] if entry.get('owned') is True}
             self.update_depot_details(); self.update_dlc_list()
             self.status.setText('')
-            self.start_button.setEnabled(bool(rows) and self.depot.count()>0)
+            self.start_button.setEnabled(self.depot.count()>0)
             self.progress_info.setText('Ready to download base game and selected DLC')
         self.task(operation, done)
 
@@ -633,10 +640,9 @@ class DownloadDialog(QDialog):
         except Exception as error:
             self.status.setText(str(error)); return
         def operation(progress):
-            from .app_info import prepare_content
-            credential=self.moon.token() if source=='Luie' else (HubcapKeyWallet().read() or {}).get('key','') if source=='Hubcap' else ''
-            plan=prepare_content(info,packs[self.pack_app],platform,selected,source,
-                                   lambda app:self.transport.fetch(source,app,credential),language,architecture,branch)
+            from .manifest_resolver import ManifestResolver
+            resolver=ManifestResolver(source,self.fetch_manifest,progress)
+            plan=resolver.prepare(info,packs[self.pack_app],platform,selected,language,architecture,branch,info.get('_manifest_source',source))
             from .preflight import check_plan,PreflightFailure
             try:states=check_plan(self.network,plan,username,branch,progress)
             except PreflightFailure as error:
@@ -646,6 +652,8 @@ class DownloadDialog(QDialog):
         def done(result):
             plan,states=result
             self.preflight_states=states
+            merged={row.id:row for row in self.rows}
+            merged.update({row.id:row for _,row,_ in plan});self.rows=list(merged.values())
             for _,row,_ in plan:self.content_info.get('_cdn_failures',{}).pop(row.id,None)
             self.content_info['_cdn_checks']={row.id:(row.manifest,state) for (_,row,_),state in zip(plan,states)}
             self.update_dlc_list()
@@ -687,11 +695,11 @@ class DownloadDialog(QDialog):
         try:
             if not self.authentication:
                 app = self.game_app()
-                if not self.rows or app != self.pack_app: raise ValueError('Fetch the manifest pack for this App ID first.')
+                if (not self.rows and not self.content_plan) or app != self.pack_app: raise ValueError('Fetch the manifest pack for this App ID first.')
                 if not self.destination.text():raise ValueError('Choose a download folder.')
                 destination = Path(self.destination.text()).expanduser().resolve()
             if not self.username.text().strip(): raise ValueError('Enter your Steam account name.')
-            row = self.rows[self.depot.currentIndex()] if not self.authentication else None
+            row = self.rows[self.depot.currentIndex()] if not self.authentication and not self.content_plan else None
             if not self.authentication and self.content_plan:
                 app,row,content_name=self.content_plan[self.content_index]
             self.temporary = tempfile.TemporaryDirectory(prefix='playlite-depot-input-')

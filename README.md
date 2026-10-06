@@ -189,3 +189,13 @@ Authentication or CDN failures prevent queueing. A successful sample confirms
 access at that moment; later chunks, expired sessions, network interruptions and
 disk errors can still fail. The native worker must be rebuilt with the current
 metadata/preflight patches using tools/build_worker.py. Host Steam is never read.
+
+The selected manifest provider is preferred, with automatic fallback through the
+other configured providers (Luie, Hubcap, Sushi and Ryuu). Required base-game,
+selected DLC and shared-depot manifests can be combined across providers. Only
+manifests matching Steam's selected branch are accepted. Each provider/App ID
+pair is fetched once per preparation, with a 128-request ceiling. Missing login
+credentials, browser challenges and HTTP failures are recorded and do not stop
+fallback to the remaining providers. Detailed failures are available through
+**Show details**; no game is queued until every required manifest and CDN sample
+passes. Provider requests continue to use the isolated VPN.
