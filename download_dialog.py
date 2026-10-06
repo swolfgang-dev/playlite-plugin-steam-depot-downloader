@@ -237,6 +237,9 @@ class DownloadDialog(QDialog):
             completed.addWidget(self.open_folder);completed.addWidget(self.add_library)
             form.addRow(completed)
             self.status.setText('')
+            # Keep room for a wrapped status even while the message is empty.
+            self.status.setMinimumHeight(self.status.fontMetrics().lineSpacing()*2)
+            self.status.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             self.depot.currentIndexChanged.connect(self.update_depot_details)
             self.depot.currentIndexChanged.connect(self.update_dlc_list)
             self.auto_started = False
