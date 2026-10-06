@@ -251,7 +251,7 @@ class CleanDownloaderTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app=QApplication.instance() or QApplication([])
 
-    def test_fetched_manifests_default_to_linux_and_enable_download(self):
+    def test_fetched_manifests_default_to_windows_and_enable_download(self):
         from downloader.download_dialog import DownloadDialog
         from downloader.providers import Depot
         from unittest.mock import Mock
@@ -260,10 +260,10 @@ class CleanDownloaderTests(unittest.TestCase):
         rows=[Depot(736261,1,b'x',name='Baba Is You Content'),Depot(736263,2,b'x',name='Baba Is You Linux')]
         with patch.object(dialog,'task',side_effect=lambda operation,done:done((rows,{'game':{'id':736260,'name':'Baba Is You','owned':True,'depots':{'736261':{'config':{'oslist':'windows'},'manifests':{'public':{'gid':'1'}}},'736263':{'config':{'oslist':'linux'},'manifests':{'public':{'gid':'2'}}}}},'dlc':[]}))),patch('downloader.download_dialog.QSettings'):
             dialog.fetch_pack()
-        self.assertEqual(dialog.depot.currentText(),'Linux')
+        self.assertEqual(dialog.depot.currentText(),'Windows')
         self.assertEqual(dialog.depot.currentIndex(),0)
         self.assertTrue(dialog.start_button.isEnabled())
-        self.assertIn('736263',dialog.depot_info.text())
+        self.assertIn('736261',dialog.depot_info.text())
         dialog.close()
 
     def test_progress_uses_worker_bytes_and_keeps_log_hidden(self):
