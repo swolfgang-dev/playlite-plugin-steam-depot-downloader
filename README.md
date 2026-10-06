@@ -215,7 +215,7 @@ outside those packages, including developer depots, without a game-specific deny
 list. When package metadata is unavailable, selection falls back to app metadata.
 Manual DLC selections remain available; package ownership is not a download gate.
 
-The downloader opens a separate live log window with a Copy log action. Manifest
+The downloader shows its live log below the download folder, with a Copy log action. Manifest
 lookups, readiness checks, errors and worker output stay available across attempts.
 The selection window has no visible progress bar; download progress remains in
 the Downloads panel.
