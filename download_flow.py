@@ -13,6 +13,14 @@ def game_folder(root, name):
     if not name: raise ValueError('Choose a game before downloading.')
     return Path(root).expanduser() / name
 
+def suggested_wine_prefix(directory,root):
+    name=Path(directory).name
+    words=re.sub(r'([a-z0-9])([A-Z])',r'\1-\2',name)
+    words=re.sub(r'([A-Z])([A-Z][a-z])',r'\1-\2',words)
+    slug=re.sub(r'[^\w]+','-',words.casefold().replace('_','-')).strip('-') or 'game'
+    return Path(root).expanduser()/slug
+
+
 def prepare_destination(path):
     path=Path(path).expanduser().resolve()
     if path.exists() and (not path.is_dir() or any(path.iterdir())):

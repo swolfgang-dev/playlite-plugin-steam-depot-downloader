@@ -98,3 +98,15 @@ class FuseFinalizationTests(unittest.TestCase):
             with patch('downloader.download_flow.hashlib.sha256',side_effect=[expected,actual]):
                 with self.assertRaisesRegex(OSError,'verification'):copy_file_exclusive(source,target)
             self.assertEqual(source.read_bytes(),b'original');self.assertFalse(target.exists())
+
+class PrefixSuggestionTests(unittest.TestCase):
+    def test_download_outside_installation_root_uses_configured_prefix_parent(self):
+        from downloader.download_flow import suggested_wine_prefix
+        self.assertEqual(suggested_wine_prefix('/downloads/West of Loathing','/wine-prefixes'),Path('/wine-prefixes/west-of-loathing'))
+
+    def test_camel_case_name_is_readable_and_suggestion_creates_nothing(self):
+        from downloader.download_flow import suggested_wine_prefix
+        with tempfile.TemporaryDirectory() as root:
+            prefix=suggested_wine_prefix('/downloads/AnotherGame',root)
+            self.assertEqual(prefix.name,'another-game')
+            self.assertFalse(prefix.exists())

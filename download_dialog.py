@@ -455,6 +455,13 @@ class DownloadDialog(QDialog):
         from playlite.app import save_game
         game={'Id':str(uuid.uuid4()),'Name':self.game_name,'InstallDirectory':self.destination.text(),
               'Executable':executable,'Platforms':[],'IsInstalled':True,'MetadataIds':{'SteamMetadata':str(self.game_app())}}
+        if Path(executable).suffix.lower()=='.exe':
+            from playlite.providers import discover_plugins
+            from .download_flow import suggested_wine_prefix
+            lutris=discover_plugins().get('LutrisIntegration')
+            defaults=lutris.directory_defaults() if lutris is not None else {}
+            prefix_root=defaults.get('Prefix') or str(parent.data/'prefixes')
+            game['Prefix']=str(suggested_wine_prefix(game['InstallDirectory'],prefix_root))
         dialog=AddGameEditor(executable,parent.data,self,game=game)
         if dialog.exec()==QDialog.DialogCode.Accepted:
             parent.games=save_game(parent.data,parent.games,dialog.result_game)
