@@ -16,6 +16,26 @@ def metadata():
 
 
 class SteamQueueTests(unittest.TestCase):
+    def test_vpn_reconnects_after_failed_check_and_checks_new_tunnel(self):
+        from downloader.steam_queue_runner import ensure_vpn
+        network=Mock();network.container='existing';network.check.side_effect=[RuntimeError('lost'),None]
+        with patch('downloader.credentials.Wallet') as wallet:
+            wallet.return_value.read.return_value=('user','secret')
+            ensure_vpn(network,'Canada','udp',Mock())
+        network.connect.assert_called_once()
+        network.cancelled.clear.assert_called_once()
+        self.assertEqual(network.check.call_count,2)
+
+    def test_healthy_vpn_is_kept_and_reconnection_failure_propagates(self):
+        from downloader.steam_queue_runner import ensure_vpn
+        network=Mock();network.container='existing'
+        ensure_vpn(network,'','udp',Mock());network.connect.assert_not_called()
+        network.check.side_effect=RuntimeError('lost')
+        network.connect.side_effect=RuntimeError('connection failed')
+        with patch('downloader.credentials.Wallet') as wallet:
+            wallet.return_value.read.return_value=('user','secret')
+            with self.assertRaisesRegex(RuntimeError,'connection failed'):ensure_vpn(network,'','udp',Mock())
+
     def test_retry_reuses_verified_staging_and_copies_missing_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);source=root/'source';source.mkdir()

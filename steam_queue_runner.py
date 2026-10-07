@@ -140,6 +140,24 @@ def export_install(source,destination,progress=None,cancelled=None):
     if progress:progress('Install files copied and verified',100)
 
 
+def ensure_vpn(network,country,protocol,progress):
+    if network.container:
+        progress('Checking VPN connection…')
+        try:
+            network.check()
+            return
+        except RuntimeError:
+            progress('VPN connection lost · reconnecting…')
+    else:
+        progress('Connecting VPN…')
+    from .credentials import Wallet
+    from .settings import Preferences
+    credentials=Wallet().read()
+    network.cancelled.clear()
+    network.connect(Preferences(country,protocol),*credentials,progress=progress)
+    network.check()
+
+
 class SteamQueueRunner(QObject):
     def __init__(self,network,window,queue,entry,snapshot):
         super().__init__(window)
@@ -154,16 +172,13 @@ class SteamQueueRunner(QObject):
         country=settings.value('country','');protocol=settings.value('protocol','udp')
         result=[]
         def progress(status,amount=None,events=None,agreement=None):
+            if self.cancelled.is_set():raise RuntimeError('Cancelled')
             self.job.signals.progress.emit(json.dumps({'status':status,'progress':amount,'events':events or [],'agreement':agreement}))
         def operation():
             app=self.snapshot['app'];platform=self.snapshot['platform']
             configured=False
             try:
-                if self.network.container:self.network.check()
-                else:
-                    from .credentials import Wallet
-                    from .settings import Preferences
-                    self.network.connect(Preferences(country,protocol),*Wallet().read(),progress=progress)
+                ensure_vpn(self.network,country,protocol,progress)
                 progress('Starting isolated Steam')
                 self.runtime.start()
                 deadline=time.monotonic()+90
