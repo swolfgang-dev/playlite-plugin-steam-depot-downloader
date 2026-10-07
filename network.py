@@ -52,10 +52,23 @@ class Network:
             raise RuntimeError('VPN connection cancelled. Downloads remain disabled.')
 
     def docker(self, *args, timeout=30):
-        try:
-            result = subprocess.run(['docker', *args], capture_output=True, text=True, timeout=timeout)
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise RuntimeError('Docker is unavailable or the operation timed out.') from error
+        # Only repeat read-only checks: a timed-out mutation may have completed.
+        readonly = args[0] in ('inspect','ps','logs') or (args[0]=='exec' and (
+            args[2:4] in (('iptables','-S'),('iptables','-C'),('ip','route')) or args[2]=='cat')) or (
+            args[0]=='run' and args[-1]=='wget -q -T 10 -O - https://api.ipify.org')
+        for attempt in range(3 if readonly else 1):
+            try:
+                result = subprocess.run(['docker', *args], capture_output=True, text=True, timeout=timeout)
+                break
+            except subprocess.TimeoutExpired as error:
+                if not readonly or attempt==2:
+                    raise RuntimeError('Docker '+args[0]+' timed out'+(' after 3 attempts.' if readonly else '.')) from error
+                import logging
+                logging.info('Docker %s check timed out; retrying in 2 seconds (%s/3).',args[0],attempt+2)
+                self.cancelled.wait(2)
+                self.check_cancelled()
+            except OSError as error:
+                raise RuntimeError('Docker is unavailable. Check that Docker is installed and running.') from error
         if result.returncode:
             # Docker errors can include mount paths or user input; never report raw output.
             raise RuntimeError('Docker could not complete the isolated network operation.')

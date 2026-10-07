@@ -13,6 +13,19 @@ from downloader.settings import Preferences
 from downloader.credentials import validate_credentials
 
 class Tests(unittest.TestCase):
+    def test_read_only_docker_timeout_retries_but_mutation_does_not(self):
+        import subprocess
+        from unittest.mock import Mock
+        network=Network();network.cancelled=Mock();network.cancelled.is_set.return_value=False
+        result=Mock(returncode=0,stdout='ok',stderr='')
+        with patch('downloader.network.subprocess.run',side_effect=[subprocess.TimeoutExpired('docker',30),result]) as run:
+            self.assertEqual(network.docker('inspect','container'),'ok')
+            self.assertEqual(run.call_count,2);network.cancelled.wait.assert_called_once_with(2)
+        network.cancelled.is_set.return_value=False
+        with patch('downloader.network.subprocess.run',side_effect=subprocess.TimeoutExpired('docker',30)) as run:
+            with self.assertRaisesRegex(RuntimeError,'timed out'):network.docker('rm','-f','container')
+            self.assertEqual(run.call_count,1)
+
     def setUp(self):
         self.selection = patch.object(Network, "choose_server", return_value=None)
         self.selection.start(); self.addCleanup(self.selection.stop)
