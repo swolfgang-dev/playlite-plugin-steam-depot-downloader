@@ -92,7 +92,13 @@ def export_install(source,destination,progress=None,cancelled=None):
         if path.is_symlink() and (Path(path.readlink()).is_absolute() or not path.resolve().is_relative_to(source)):
             raise ValueError('Steam content contains a link outside the game folder.')
         if path.is_file() and not path.is_symlink():total+=path.stat().st_size
-    destination,staging=prepare_destination(destination)
+    destination,staging=prepare_destination(destination,reuse_staging=True)
+    # A retained copy must only contain paths from this Steam installation.
+    for path in staging.rglob('*'):
+        relative=path.relative_to(staging)
+        original=source/relative
+        if path.is_symlink() or not original.exists() or path.is_dir()!=original.is_dir():
+            raise ValueError('Retained download staging contains unexpected files: '+str(relative))
     counts={'copy':0,'verify':0};last_update=[0.]
     elapsed={'copy':0.,'verify':0.};last_sample=[time.monotonic()]
 
@@ -112,6 +118,20 @@ def export_install(source,destination,progress=None,cancelled=None):
                      min(99,sum(counts.values())/max(1,total*2)*100))
     if progress:progress('Copying files to install location',0)
     def copy_file(source,target):
+        import hashlib
+        source=Path(source);target=Path(target)
+        if target.exists():
+            def digest(path):
+                result=hashlib.sha256()
+                with path.open('rb') as stream:
+                    while data:=stream.read(1024*1024):
+                        result.update(data)
+                        if cancelled and cancelled():raise RuntimeError('Installation copy stopped · partial files retained')
+                return result.digest()
+            if target.is_file() and target.stat().st_size==source.stat().st_size and digest(target)==digest(source):
+                update(source.stat().st_size,'copy');update(source.stat().st_size,'verify')
+                return str(target)
+            target.unlink()
         copy_file_exclusive(Path(source),Path(target),update)
         return target
     shutil.copytree(source,staging,dirs_exist_ok=True,symlinks=True,copy_function=copy_file)

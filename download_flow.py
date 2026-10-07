@@ -21,13 +21,14 @@ def suggested_wine_prefix(directory,root):
     return Path(root).expanduser()/slug
 
 
-def prepare_destination(path):
+def prepare_destination(path, reuse_staging=False):
     path=Path(path).expanduser().resolve()
-    if path.exists() and (not path.is_dir() or any(path.iterdir())):
+    staging=path/'.playlite-download'
+    retained=reuse_staging and staging.is_dir() and not staging.is_symlink()
+    if path.exists() and (not path.is_dir() or any(entry!=staging or not retained for entry in path.iterdir())):
         raise ValueError('The download folder already contains files. Choose an empty folder.')
     path.mkdir(parents=True,exist_ok=True)
-    staging=path/'.playlite-download'
-    staging.mkdir(mode=0o777);staging.chmod(0o777)
+    staging.mkdir(mode=0o777,exist_ok=retained);staging.chmod(0o777)
     return path,staging
 
 def atomic_rename_without_overwrite(source,target):

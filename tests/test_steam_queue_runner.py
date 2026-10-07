@@ -16,6 +16,29 @@ def metadata():
 
 
 class SteamQueueTests(unittest.TestCase):
+    def test_retry_reuses_verified_staging_and_copies_missing_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'source';source.mkdir()
+            (source/'ready.bin').write_bytes(b'ready');(source/'missing.bin').write_bytes(b'missing')
+            staging=root/'installed/.playlite-download';staging.mkdir(parents=True)
+            (staging/'ready.bin').write_bytes(b'ready')
+            with patch('downloader.download_flow.copy_file_exclusive',wraps=__import__('downloader.download_flow',fromlist=['copy_file_exclusive']).copy_file_exclusive) as copy:
+                export_install(source,root/'installed')
+                self.assertEqual(copy.call_count,1)
+            self.assertEqual((root/'installed/ready.bin').read_bytes(),b'ready')
+            self.assertEqual((root/'installed/missing.bin').read_bytes(),b'missing')
+            self.assertFalse(staging.exists())
+
+    def test_retry_rejects_unrelated_staging_and_destination_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'source';source.mkdir();(source/'game.bin').write_bytes(b'game')
+            staging=root/'installed/.playlite-download';staging.mkdir(parents=True)
+            (staging/'unrelated.txt').write_text('keep')
+            with self.assertRaisesRegex(ValueError,'unexpected'):export_install(source,root/'installed')
+            self.assertEqual((staging/'unrelated.txt').read_text(),'keep')
+            (root/'installed/user.txt').write_text('keep')
+            with self.assertRaisesRegex(ValueError,'already contains'):export_install(source,root/'installed')
+
     def test_install_copy_reports_chunk_progress_and_verification(self):
         import itertools
         with tempfile.TemporaryDirectory() as directory:
