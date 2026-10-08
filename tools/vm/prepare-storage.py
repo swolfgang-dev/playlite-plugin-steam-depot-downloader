@@ -10,7 +10,9 @@ def prepare():
     if not os.path.ismount(shared):
         raise RuntimeError('Shared games folder is not mounted.')
     config = json.loads(Path('/etc/playlite-vm.json').read_text())
-    staging = shared / config['staging']
+    staging = Path('/mnt/playlite-downloads') if config.get('download_storage') else shared / config['staging']
+    if config.get('download_storage') and not os.path.ismount(staging):
+        raise RuntimeError('Plugin download storage is not mounted.')
     apps = Path.home() / '.steam/debian-installation/steamapps'
     apps.mkdir(parents=True, exist_ok=True)
     for relative, destination in [('common', shared),

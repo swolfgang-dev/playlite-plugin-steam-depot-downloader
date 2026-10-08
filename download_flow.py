@@ -9,12 +9,12 @@ import hashlib
 import shutil
 
 def game_folder(root, name):
-    name=re.sub(r'[\\/\x00-\x1f<>:"|?*]', '_', name).strip(' .')[:120]
+    name=re.sub(r'[\\/\x00-\x1f<>:"|?*]', '', name).strip(' .')[:120]
     if not name: raise ValueError('Choose a game before downloading.')
     return Path(root).expanduser() / name
 
 def suggested_wine_prefix(directory,root):
-    name=Path(directory).name
+    name=re.sub("['’]", "", Path(directory).name)
     words=re.sub(r'([a-z0-9])([A-Z])',r'\1-\2',name)
     words=re.sub(r'([A-Z])([A-Z][a-z])',r'\1-\2',words)
     slug=re.sub(r'[^\w]+','-',words.casefold().replace('_','-')).strip('-') or 'game'

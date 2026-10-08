@@ -61,10 +61,24 @@ def execute(args, **options):
 def register_service(cfg):
     # Register with the real user manager even when the app has a private HOME.
     root = Path(cfg['root'])
-    service = root / (cfg['service'] + '.service')
-    service.write_text((root / 'virtiofs.service').read_text())
-    execute(['systemctl', '--user', 'link', '--force', service])
+    for name, template, socket in storage_services(cfg):
+        service = root / (name + '.service')
+        service.write_text((root / template).read_text())
+        execute(['systemctl', '--user', 'link', '--force', service])
     execute(['systemctl', '--user', 'daemon-reload'])
+
+
+def storage_services(cfg):
+    services = [(cfg['service'], 'virtiofs.service', cfg['socket'])]
+    if cfg.get('download_storage'):
+        services.append((cfg['service'] + '-downloads', 'virtiofs-downloads.service',
+                         cfg['socket'].removesuffix('.sock') + '-downloads.sock'))
+    return services
+
+
+def download_config(cfg):
+    return dict(cfg, shared=str(Path(cfg['root']) / 'download-storage'),
+                socket=cfg['socket'].removesuffix('.sock') + '-downloads.sock')
 
 
 def subordinate_id(filename, identity):
@@ -93,7 +107,7 @@ def configuration(root, shared, name=None):
             'service': 'playlite-steam-virtiofs-' + digest,
             'socket': f'/run/user/{os.getuid()}/libvirt/qemu/run/steam-{digest}.sock',
             'memory_mib': 8192, 'cpus': 4, 'disk_gib': 160,
-            'staging': '.steam-vm-' + digest, 'shared_mount': shared_mount(shared)}
+            'staging': '.steam-vm-' + digest, 'download_storage': True, 'shared_mount': shared_mount(shared)}
 
 
 def shared_mount(shared):
@@ -135,7 +149,7 @@ def cloud_config(cfg):
             files.append({'path': '/usr/local/lib/playlite-vm/' + name, 'permissions': '0644',
                           'content': asset_path(name).read_text()})
     files += [{'path': '/etc/playlite-vm.json', 'permissions': '0644',
-               'content': json.dumps({'staging': cfg['staging']})}]
+               'content': json.dumps({'staging': cfg['staging'], 'download_storage': bool(cfg.get('download_storage'))})}]
     return {'hostname': cfg['domain'], 'manage_etc_hosts': True,
             'growpart': {'mode': 'auto', 'devices': ['/'], 'ignore_growroot_disabled': False},
             'resize_rootfs': True, 'ssh_pwauth': False,
@@ -143,7 +157,9 @@ def cloud_config(cfg):
                        'groups': ['adm', 'sudo'], 'sudo': 'ALL=(ALL) NOPASSWD:ALL'}],
             'packages': ['qemu-guest-agent', 'curl', 'software-properties-common'],
             'write_files': files,
-            'mounts': [['standalone-games', '/mnt/standalone', 'virtiofs', 'defaults,nofail', '0', '0']],
+            'mounts': [['standalone-games', '/mnt/standalone', 'virtiofs', 'defaults,nofail', '0', '0']] +
+                      ([['steam-downloads', '/mnt/playlite-downloads', 'virtiofs', 'defaults,nofail', '0', '0']]
+                       if cfg.get('download_storage') else []),
             'runcmd': [['bash', '/usr/local/lib/playlite-vm/provision-guest.sh']]}
 
 
@@ -187,6 +203,11 @@ def domain_xml(cfg):
     ET.SubElement(share, 'driver', type='virtiofs', queue='1024')
     ET.SubElement(share, 'source', socket=cfg['socket'])
     ET.SubElement(share, 'target', dir='standalone-games')
+    if cfg.get('download_storage'):
+        share = ET.SubElement(devices, 'filesystem', type='mount', accessmode='passthrough')
+        ET.SubElement(share, 'driver', type='virtiofs', queue='1024')
+        ET.SubElement(share, 'source', socket=download_config(cfg)['socket'])
+        ET.SubElement(share, 'target', dir='steam-downloads')
     for kind, name in [('unix', 'org.qemu.guest_agent.0'), ('spicevmc', 'com.redhat.spice.0')]:
         channel = ET.SubElement(devices, 'channel', type=kind)
         ET.SubElement(channel, 'target', type='virtio', name=name)
@@ -323,6 +344,9 @@ def install(cfg, start=True):
     xml = root / 'domain.xml'; xml.write_text(domain_xml(cfg))
     text = service_text(cfg, binary, subuid, subgid)
     (root / 'virtiofs.service').write_text(text)
+    if cfg.get('download_storage'):
+        (root / 'download-storage').mkdir(mode=0o700, exist_ok=True)
+        (root / 'virtiofs-downloads.service').write_text(service_text(download_config(cfg), binary, subuid, subgid))
     register_service(cfg)
     execute(['virsh', '-c', 'qemu:///session', 'define', xml])
     (root / 'vm.json').write_text(json.dumps(cfg, indent=2)); (root / 'vm.json').chmod(0o600)
@@ -340,18 +364,19 @@ def open_vm(cfg, desktop=True):
     if shared_mount(cfg['shared']) != cfg['shared_mount']:
         raise RuntimeError('The configured shared filesystem is not mounted; refusing to use a fallback folder.')
     register_service(cfg)
-    try:
-        execute(['systemctl', '--user', 'start', cfg['service'] + '.service'])
-    except RuntimeError as error:
-        journal = subprocess.run(['journalctl', '--user', '-u', cfg['service'] + '.service', '-n', '40', '--no-pager'], capture_output=True, text=True)
-        raise RuntimeError(str(error) + '\n' + journal.stdout.strip()) from None
-    for _ in range(40):
-        socket_path = Path(cfg['socket'])
-        if socket_path.exists() and stat.S_ISSOCK(socket_path.stat().st_mode):
-            break
-        time.sleep(.25)
-    else:
-        raise RuntimeError('The virtiofs daemon did not create its socket. Check its systemd user service.')
+    for name, template, socket in storage_services(cfg):
+        try:
+            execute(['systemctl', '--user', 'start', name + '.service'])
+        except RuntimeError as error:
+            journal = subprocess.run(['journalctl', '--user', '-u', name + '.service', '-n', '40', '--no-pager'], capture_output=True, text=True)
+            raise RuntimeError(str(error) + '\n' + journal.stdout.strip()) from None
+        for _ in range(40):
+            socket_path = Path(socket)
+            if socket_path.exists() and stat.S_ISSOCK(socket_path.stat().st_mode):
+                break
+            time.sleep(.25)
+        else:
+            raise RuntimeError('The virtiofs daemon did not create its socket. Check its systemd user service.')
     state = execute(['virsh', '-c', 'qemu:///session', 'domstate', cfg['domain']],
                     capture_output=True, text=True).stdout.strip()
     if state == 'paused':

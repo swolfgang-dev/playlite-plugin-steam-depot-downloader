@@ -26,7 +26,7 @@ class VMInstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)
             (root/'virtiofs.service').write_text('[Service]\nExecStart=/bin/true\n')
-            cfg={'root':str(root),'service':'playlite-steam-test'}
+            cfg={'root':str(root),'service':'playlite-steam-test','socket':'/test.sock'}
             with patch.object(installer,'execute') as execute:
                 installer.register_service(cfg)
             unit=root/'playlite-steam-test.service'
@@ -61,6 +61,31 @@ class VMInstallerTests(unittest.TestCase):
             self.assertEqual(xml.find('./devices/graphics/clipboard').get('copypaste'), 'yes')
             self.assertEqual(xml.find('./devices/graphics/filetransfer').get('enable'), 'no')
             self.assertIsNotNone(xml.find('./devices/disk/backingStore/source'))
+
+    def test_download_share_exports_only_dedicated_userdata_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            shared = Path(temporary) / 'games'; shared.mkdir()
+            with patch.object(installer, 'shared_mount', return_value={'target': '/pool', 'fstype': 'fuse.mergerfs'}):
+                cfg = installer.configuration(Path(temporary) / 'userdata', shared)
+            xml = ET.fromstring(installer.domain_xml(cfg))
+            shares = xml.findall('./devices/filesystem')
+            self.assertEqual([share.find('target').get('dir') for share in shares], ['standalone-games', 'steam-downloads'])
+            downloads = installer.download_config(cfg)
+            self.assertEqual(downloads['shared'], str(Path(cfg['root']) / 'download-storage'))
+            self.assertNotEqual(downloads['socket'], cfg['socket'])
+            self.assertEqual(shares[1].find('source').get('socket'), downloads['socket'])
+            self.assertIn(['steam-downloads', '/mnt/playlite-downloads', 'virtiofs', 'defaults,nofail', '0', '0'], installer.cloud_config(cfg)['mounts'])
+            self.assertEqual(len(installer.storage_services(cfg)), 2)
+            self.assertIn(downloads['shared'], installer.service_text(downloads, '/virtiofsd', 100000, 100000))
+
+    def test_download_mount_failure_does_not_create_local_fallback(self):
+        storage = load_script('vm_storage', 'prepare-storage.py')
+        with patch.object(storage.os.path, 'ismount', side_effect=[True, False]), \
+             patch.object(storage.Path, 'read_text', return_value=json.dumps({'staging': '.steam-vm-123456789abc', 'download_storage': True})), \
+             patch.object(storage.Path, 'mkdir') as mkdir:
+            with self.assertRaisesRegex(RuntimeError, 'download storage is not mounted'):
+                storage.prepare()
+            mkdir.assert_not_called()
 
     def test_seed_has_no_password_keys_or_copied_session(self):
         with tempfile.TemporaryDirectory() as root:

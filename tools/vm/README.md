@@ -21,7 +21,12 @@ The shared folder can be a mergerfs pool. Export the merged path, not one of its
 physical disks. Steam downloads games into `<shared>/<Game>/` directly, and Playlite links to
 those same files without copying or uninstalling them; Workshop content uses
 `<shared>/Workshop/<AppID>/<ItemID>/`. Steam metadata is private to the VM.
-Temporary downloads are in a hidden folder unique to this VM on the same pool.
+Temporary downloads use `<userdata>/download-storage/downloading/` and
+`<userdata>/download-storage/temp/`, exported separately to `/mnt/playlite-downloads`
+in the guest. Only this download directory is exported, keeping VM disks and
+account state private. Steam copies completed content into the shared games
+folder. Older VMs retain their existing storage links until migrated with Steam
+stopped and their partial downloads preserved.
 Existing game directories are reused by Steam. Do not let two Steam instances
 update the same game folder simultaneously.
 

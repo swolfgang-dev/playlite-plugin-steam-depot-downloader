@@ -212,6 +212,10 @@ def dispatch(request):
         if command in ('start', 'install', 'workshop'):
             if not os.path.ismount('/mnt/standalone'):
                 raise RuntimeError('Shared games folder is unavailable; Steam operation was blocked.')
+            if CFG.get('download_storage') and not os.path.ismount('/mnt/playlite-downloads'):
+                raise RuntimeError('Plugin download storage is unavailable; Steam operation was blocked.')
+            import runpy
+            runpy.run_path(str(ASSETS / 'prepare-storage.py'))['prepare']()
             common=LIBRARY/'steamapps/common'
             if not common.is_symlink() or common.resolve()!=Path('/mnt/standalone'):
                 raise RuntimeError('Steam game storage is not linked to the shared folder. Run VM setup first.')

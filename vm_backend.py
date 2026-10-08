@@ -290,7 +290,8 @@ except Exception as error:
         # Validate isolation and mount identity before changing the running VM.
         candidate=installer.configuration(self.profile,folder)
         cfg.update(shared=candidate['shared'],shared_mount=candidate['shared_mount'])
-        for relative in (Path(cfg['staging'])/'downloading',Path(cfg['staging'])/'temp',Path('Workshop')):
+        relatives = (Path('Workshop'),) if cfg.get('download_storage') else (Path(cfg['staging'])/'downloading', Path(cfg['staging'])/'temp', Path('Workshop'))
+        for relative in relatives:
             (folder/relative).mkdir(parents=True,exist_ok=True)
         state=installer.execute(['virsh','-c','qemu:///session','domstate',cfg['domain']]).stdout.strip()
         restart=state in ('running','paused')
@@ -339,7 +340,11 @@ except Exception as error:
         while installer.execute(['virsh','-c','qemu:///session','domstate',cfg['domain']]).stdout.strip()!='shut off':
             if time.monotonic()>deadline:raise RuntimeError('VM did not shut down. Its disk was retained; retry after shutdown.')
             time.sleep(.5)
-        installer.execute(['systemctl','--user','disable','--now',cfg['service']+'.service'])
+        services = [cfg['service']]
+        if cfg.get('download_storage'):
+            services.append(cfg['service'] + '-downloads')
+        for name in services:
+            installer.execute(['systemctl','--user','disable','--now',name+'.service'])
         installer.execute(['virsh','-c','qemu:///session','undefine',cfg['domain'],'--managed-save'])
         progress('Removing private VM files; retaining shared games…')
         shutil.rmtree(root)
@@ -362,7 +367,7 @@ class VMSteamRuntime:
     def __init__(self, network, root=None):
         self.network = network
         cfg = network.cfg
-        self.root = Path(cfg['shared']) / cfg['staging']
+        self.root = Path(cfg['root']) / 'download-storage' if cfg.get('download_storage') else Path(cfg['shared']) / cfg['staging']
         self.name = cfg['domain']
         self.volume = None
 
@@ -409,8 +414,8 @@ def update_runtime(network, progress=lambda text: None):
         pass  # The first bridge installation has no RPC endpoint yet.
     installer = installer_module()
     files = {name: installer.asset_path(name).read_text() for name in installer.ASSET_FILES
-             if name in ('runtime_server.py', 'rpc.py', 'setup-runtime.py', 'guest_control.py', 'steam_sign_in.py') or name.startswith('steam/')}
-    payload = json.dumps({'files': files, 'staging': network.cfg['staging']}).encode()
+             if name in ('runtime_server.py', 'rpc.py', 'setup-runtime.py', 'guest_control.py', 'steam_sign_in.py', 'prepare-storage.py') or name.startswith('steam/')}
+    payload = json.dumps({'files': files, 'staging': network.cfg['staging'], 'download_storage': bool(network.cfg.get('download_storage'))}).encode()
     # Fixed installer code; asset content travels on stdin, never shell argv.
     script = r'''
 import json,os,pathlib,subprocess,sys
@@ -427,7 +432,7 @@ for name,content in payload['files'].items():
 config=pathlib.Path('/etc/playlite-vm.json')
 if config.exists() and json.loads(config.read_text()).get('staging')!=payload['staging']:
     raise ValueError('VM staging configuration mismatch')
-config.write_text(json.dumps({'staging':payload['staging']}))
+config.write_text(json.dumps({'staging':payload['staging'], 'download_storage':payload['download_storage']}))
 subprocess.run(['/usr/bin/python3',str(root/'setup-runtime.py')],check=True)
 subprocess.run(['systemctl','restart','playlite-steam-bridge.service'],check=True)
 '''
