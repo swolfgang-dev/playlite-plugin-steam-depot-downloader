@@ -1,4 +1,5 @@
 """Small account-specific login dialogs; secrets are kept in KWallet."""
+from .desktop_links import open_account_link
 from PyQt6.QtCore import QThreadPool
 from PyQt6.QtWidgets import QDialog, QFormLayout, QLineEdit, QLabel, QPushButton
 from .credentials import Wallet, MoonSessionWallet, HubcapKeyWallet
@@ -36,7 +37,7 @@ class CredentialDialog(QDialog):
             except (ValueError,RuntimeError):pass
             form.addRow('API key', self.secret)
             info = QLabel('Your API key is saved in KWallet. Its acceptance is confirmed when you fetch a manifest pack.')
-        info.setOpenExternalLinks(True); info.setWordWrap(True); form.addRow(info)
+        info.setOpenExternalLinks(False); info.linkActivated.connect(open_account_link); info.setWordWrap(True); form.addRow(info)
         self.status = QLabel(''); self.status.setWordWrap(True); form.addRow(self.status)
         self.submit = QPushButton('Authenticate')
         self.submit.clicked.connect(self.save); self.secret.returnPressed.connect(self.save)

@@ -53,6 +53,9 @@ def wait_for(runtime,predicate,timeout,message):
 
 
 def provision(runtime,preferences,credentials,progress):
+    if getattr(runtime.network, 'is_vm', False) is True:
+        from .vm_setup import provision_vm
+        return provision_vm(runtime.network,preferences,progress)
     ensure_image(progress)
     progress('Connecting the isolated VPN…')
     if runtime.network.container:runtime.network.check()

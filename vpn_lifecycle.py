@@ -45,6 +45,8 @@ def has_downloads(network):
 
 
 def disconnect_when_idle(network,release_session=False):
+    if getattr(network,'is_vm',False) is True:
+        return  # VM, Steam and VPN belong to the whole Playlite session.
     if has_downloads(network) or has_open_windows(network):
         network.disconnect_pending=True
         queue=vars(network).get('download_queue')

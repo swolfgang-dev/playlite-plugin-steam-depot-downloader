@@ -3,6 +3,7 @@ import json
 import re
 import sys
 import time
+import shlex
 from pathlib import Path
 
 FIELDS=('daily_usage','daily_limit','remaining','limit','used','retry_after','reset')
@@ -47,8 +48,9 @@ def install_capture(backend):
       printf '%s\\n' "${clean#< }" >> "$header_file"
 '''+header_anchor,1)
     source=source.replace(anchor,'''    # Playlite provider quota capture
-    python3 /opt/provider_limits.py "$STATE_FILE" "${C_NAME[i]}" "${http:-0}" "${C_HEAD[i]}" "${C_ZIP[i]}" || true
+    python3 PLAYLITE_CAPTURE_SCRIPT "$STATE_FILE" "${C_NAME[i]}" "${http:-0}" "${C_HEAD[i]}" "${C_ZIP[i]}" || true
 '''+anchor,1)
+    source=source.replace('PLAYLITE_CAPTURE_SCRIPT',shlex.quote(str(Path(__file__).resolve())))
     temporary=script.with_suffix('.playlite-tmp');temporary.write_text(source);temporary.chmod(script.stat().st_mode);temporary.replace(script)
 
 

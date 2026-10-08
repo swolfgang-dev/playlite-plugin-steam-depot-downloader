@@ -141,6 +141,16 @@ def export_install(source,destination,progress=None,cancelled=None):
 
 
 def ensure_vpn(network,country,protocol,progress):
+    if getattr(network, 'is_vm', False) is True:
+        from .settings import Preferences
+        network.cancelled.clear()
+        try:
+            if network.container:
+                network.check();return
+        except RuntimeError:
+            pass
+        network.connect(Preferences(country,protocol),progress=progress)
+        return
     if network.container:
         progress('Checking VPN connection…')
         try:
@@ -171,9 +181,9 @@ class SteamQueueRunner(QObject):
         settings=QSettings('Playlite','SteamDownloader')
         country=settings.value('country','');protocol=settings.value('protocol','udp')
         result=[]
-        def progress(status,amount=None,events=None,agreement=None):
+        def progress(status,amount=None,events=None,agreement=None,destination=None):
             if self.cancelled.is_set():raise RuntimeError('Cancelled')
-            self.job.signals.progress.emit(json.dumps({'status':status,'progress':amount,'events':events or [],'agreement':agreement}))
+            self.job.signals.progress.emit(json.dumps({'status':status,'progress':amount,'events':events or [],'agreement':agreement,'destination':destination}))
         def operation():
             app=self.snapshot['app'];platform=self.snapshot['platform']
             configured=False
@@ -325,6 +335,11 @@ class SteamQueueRunner(QObject):
                             message+=f' · {state.get("export_copied",0)/1048576:.1f} / {state["export_total"]/1048576:.1f} MiB copied'
                         amount=99
                     progress(message,amount,events);self.cancelled.wait(2)
+                if getattr(self.runtime,'direct_install',False) is True:
+                    source=self.runtime.installation_path(state)
+                    progress('Steam verified the shared installation · ready to launch',100,destination=str(source))
+                    result.append(True)
+                    return platform.title()+' download completed and verified by Steam'
                 progress('Steam verification complete · copying game files to '+self.entry.destination,0)
                 source=(self.runtime.root/'library'/state['directory']).resolve()
                 if not source.is_relative_to((self.runtime.root/'library/steamapps/common').resolve()):
@@ -333,7 +348,10 @@ class SteamQueueRunner(QObject):
                 result.append(True)
                 progress('Export verified · removing the private Steam game copy',100)
                 try:
-                    self.runtime.request('finish_export',app)
+                    cleanup=self.runtime.request('finish_export',app)
+                    if cleanup.get('retained') is True:
+                        progress('Export verified · existing shared Steam installation retained',100)
+                        return platform.title()+' download completed and verified by Steam'
                 except Exception as error:
                     progress('Game installed successfully; private-copy cleanup needs attention: '+str(error),100)
                     return platform.title()+' download completed · private Steam cleanup pending'
@@ -346,6 +364,8 @@ class SteamQueueRunner(QObject):
         self.job=Job(operation)
         def update(raw):
             data=json.loads(raw)
+            if data.get('destination'):
+                self.entry.destination=data['destination']
             agreement=data.get('agreement')
             if agreement:self.review_agreement(agreement)
             events=getattr(self.entry,'steam_events',[])

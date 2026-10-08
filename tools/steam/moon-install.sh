@@ -1,0 +1,3148 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  luatools-moon — one-shot installer
+# ============================================================================
+#  Installs the full stack in a single command:
+#
+#    curl -fsSL https://raw.githubusercontent.com/swwayps/luatools-moon/main/install.sh | bash
+#
+#  Pipeline:
+#    1. Pre-flight checks (not-root, x86_64, internet, NATIVE Steam).
+#    2. Runtime dependencies (jq, curl, tar, unzip).
+#    3. slsteam-moon   — download latest release, extract, run setup.sh install.
+#    4. Lumen          — download latest release into ~/.local/share/Lumen.
+#    5. This plugin    — download latest release into ~/.local/share/Lumen/luatools.
+#
+#  Bilingual (English / Português) based on the system locale.
+# ============================================================================
+
+set -uo pipefail
+
+# ----------------------------------------------------------------------------
+# Command-line options (parsed by parse_args; see main)
+# ----------------------------------------------------------------------------
+# --noplugin : install only the runtime stack (slsteam-moon + Lumen) and skip
+#              the LuaTools plugin. CloudRedirect is still offered (its prompt
+#              defaults to "no"). Invoke as: curl ... | bash -s -- --noplugin
+OPT_NOPLUGIN=0
+OPT_HELP=0
+OPT_BAD_ARG=""
+OPT_SLS_CHANNEL="stable"
+OPT_PLUGIN_CHANNEL="stable"
+OPT_LUMEN_CHANNEL="stable"
+
+# ----------------------------------------------------------------------------
+# Repositories / release sources
+# ----------------------------------------------------------------------------
+SLS_REPO="swwayps/slsteam-moon"
+SLS_ASSET_PREFIX="slsteam-moon-linux"          # asset is slsteam-moon-linux-<ver>.zip
+SLS_BETA_PATH="dist/slsteam-moon-linux.zip"
+# Lumen line: pick the newest release whose asset is the Lumen wrapper build
+# (named slsteam-moon-linux-<ver>-lumen.zip). Convention-based, so publishing a
+# new version (e.g. v2.5-lumen) needs no installer edit.
+SLS_ASSET_GLOB="^${SLS_ASSET_PREFIX}-.*-lumen\\.zip$"
+
+PLUGIN_REPO="swwayps/luatools-moon"
+PLUGIN_ASSET="luatools-linux.zip"
+PLUGIN_BETA_PATH="dist/luatools-linux.zip"
+PLUGIN_NAME="luatools"                          # plugin.json "name"
+
+LUMEN_REPO="swwayps/lumen"
+LUMEN_ASSET="lumen-linux.zip"
+LUMEN_BETA_PATH="dist/lumen-linux.zip"
+LUMEN_DIR="$HOME/.local/share/Lumen"            # binary + lua/ + luatools/
+
+# Stable release fallback. The manifest is small and mutable; every archive URL
+# inside it is pinned to the mirror commit that introduced those exact bytes.
+RELEASE_MIRROR_MANIFEST="https://cdn.jsdelivr.net/gh/swwayps/jsdelivr@main/manifest.json"
+
+# CloudRedirect hook (the patched 32-bit cloud_redirect.so) lives in its own
+# repo now; we fetch the prebuilt hook straight from its raw branch.
+CR_MOON_REPO="swwayps/cloudredirect-moon"
+
+# CloudRedirect (optional) — redirects Steam Cloud for added games to the
+# user's own Google Drive / OneDrive / R2 / S3 / local folder. We deploy a
+# patched 32-bit hook plus its CLI from cloudredirect-moon and load the hook via
+# Steam wrapper's LD_PRELOAD. Provider sign-in lives in Lumen Settings → Cloud
+# Saves (the Lumen backend runs the OAuth flow and writes the hook's config
+# directly), so the main line needs no flatpak login app. The flatpak helpers
+# below are retained for the millennium fallback branch only.
+#
+# The branch follows upstream v2.6.x while retaining the Linux attachment and
+# runtime-safety fixes still needed by this stack. Both artifacts are built for
+# an old-enough glibc to load in the Steam runtime.
+CR_MOON_RAW_BASE="https://raw.githubusercontent.com/${CR_MOON_REPO}/master"
+CR_SO_URL="${CR_MOON_RAW_BASE}/cloud_redirect.so"
+CR_CLI_URL="${CR_MOON_RAW_BASE}/cloud_redirect_cli"
+CR_REPO="Selectively11/CloudRedirect"
+CR_FLATPAK_APP_ID="org.cloudredirect.CloudRedirect"
+CR_DIR="$HOME/.local/share/CloudRedirect"
+CR_SO_PATH="$CR_DIR/cloud_redirect.so"
+CR_CLI_PATH="$CR_DIR/cloud_redirect_cli"
+CR_KDE_RUNTIME="org.kde.Platform//6.10"
+
+# ============================================================================
+# Pretty output — "moonlit night" palette, matching slsteam-moon's setup.sh.
+# Degrades to plain text on dumb / non-TTY terminals.
+# ============================================================================
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then
+	if command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 256 ]; then
+		HAS_256=1
+	elif [ "${COLORTERM:-}" = "truecolor" ] || [ "${COLORTERM:-}" = "24bit" ]; then
+		HAS_256=1
+	else
+		HAS_256=0
+	fi
+
+	BOLD=$'\033[1m'; DIM=$'\033[2m'; NC=$'\033[0m'
+	if [ "$HAS_256" = 1 ]; then
+		MOON=$'\033[38;5;153m'; NIGHT=$'\033[38;5;75m'; HALO=$'\033[38;5;231m'
+		MUTED=$'\033[38;5;110m'; GREEN=$'\033[38;5;114m'; YELLOW=$'\033[38;5;221m'
+		RED=$'\033[38;5;203m'
+	else
+		MOON=$'\033[1;34m'; NIGHT=$'\033[0;36m'; HALO=$'\033[1;37m'
+		MUTED=$'\033[0;34m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'
+		RED=$'\033[0;31m'
+	fi
+else
+	BOLD=""; DIM=""; NC=""
+	MOON=""; NIGHT=""; HALO=""; MUTED=""
+	GREEN=""; YELLOW=""; RED=""
+fi
+
+# ============================================================================
+# Localization. L "<english>" "<português>" picks the string for the locale.
+# ============================================================================
+detect_language() {
+	local l="${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}"
+	case "$l" in
+		pt*|*_BR*|*_PT*) LANG_IS_PT=1 ;;
+		*)               LANG_IS_PT=0 ;;
+	esac
+}
+
+L() { if [ "${LANG_IS_PT:-0}" = 1 ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+
+log_info()    { echo -e "${NIGHT}→${NC} $1"; }
+log_success() { echo -e "${GREEN}✓${NC} $1"; }
+log_warn()    { echo -e "${YELLOW}⚠${NC} $1"; }
+log_error()   { echo -e "${RED}✗${NC} $1"; }
+log_step()    { echo -e "${MOON}•${NC} $1"; }
+
+fail() { log_error "$1"; exit 1; }
+
+print_banner() {
+	echo ""
+	echo -e "${MOON}${BOLD}"
+	echo "┌─────────────────────────────────────────────────────────┐"
+	printf "│            ${HALO}${BOLD}◯${NC}${MOON}${BOLD}  slsteammoon · LuaTools installer          │\n"
+	echo "└─────────────────────────────────────────────────────────┘"
+	echo -e "${NC}"
+}
+
+print_section() {
+	echo ""
+	echo -e "${NIGHT}─────────────────────────────────────────────────────────${NC}"
+	echo -e "${NIGHT}${BOLD}❯ $1${NC}"
+	echo -e "${NIGHT}─────────────────────────────────────────────────────────${NC}"
+}
+
+# Ask a yes/no question and return 0 for yes, 1 for no. Works even when the
+# installer runs as `curl ... | bash`: stdin is the pipe, so the prompt is
+# written to and read from the controlling terminal (/dev/tty), same trick as
+# flatpak_tty. $1 = English prompt, $2 = Português prompt, $3 = default answer
+# ("y" or "n", defaults to "y"). With no controlling terminal (CI / truly
+# non-interactive) it returns the default instead of blocking forever.
+prompt_yes_no() {
+	local q_en="$1" q_pt="$2" def="${3:-y}" prompt hint ans
+	prompt="$(L "$q_en" "$q_pt")"
+	if [ "$def" = "y" ]; then
+		hint="$(L "[Y/n]" "[S/n]")"
+	else
+		hint="$(L "[y/N]" "[s/N]")"
+	fi
+
+	# No usable terminal → don't hang; honour the default.
+	if ! { [ -e /dev/tty ] && { : >/dev/tty; } 2>/dev/null; }; then
+		[ "$def" = "y" ]
+		return
+	fi
+
+	while true; do
+		printf '%s %s ' "$prompt" "$hint" >/dev/tty
+		IFS= read -r ans </dev/tty || ans=""
+		ans="$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+		case "$ans" in
+			"")       [ "$def" = "y" ]; return ;;
+			y*|s*)    return 0 ;;
+			n*)       return 1 ;;
+			*) echo "$(L "Please answer y (yes) or n (no)." \
+			            "Responda s (sim) ou n (não).")" >/dev/tty ;;
+		esac
+	done
+}
+
+# ── Deferred/optional prompts (Deck on-screen-keyboard friendly) ────────────
+# On SteamOS / Bazzite and derivatives the on-screen keyboard needs Steam
+# RUNNING to type into a terminal. But main() stops Steam early — before the
+# CloudRedirect / Game Mode yes/no prompts — so a Deck user with no physical
+# keyboard couldn't answer them. On those systems we ask up front, while Steam
+# is still open (preask_prompts, called before stop_steam), and cache the
+# answers here; the install steps reuse them via resolve_yesno instead of
+# prompting after Steam is gone. Desktop (mutable) installs are unaffected and
+# keep prompting inline. The question strings live here so the pre-ask and the
+# inline sites can't drift apart.
+Q_CLOUD_EN="Do you want Steam Cloud saves to work for your games? This installs CloudRedirect, which syncs to Google Drive, OneDrive, R2, S3 or a custom folder. Say no if you don't need cloud saves."
+Q_CLOUD_PT="Você quer que os saves da Steam Cloud funcionem nos seus jogos? Isso instala o CloudRedirect, com Google Drive, OneDrive, R2, S3 ou uma pasta personalizada. Responda não se você não precisa de cloud saves."
+Q_GAMEMODE_EN="Enable the plugin in Game Mode too? This changes how Steam is launched in Gaming Mode (reversible by the uninstaller)."
+Q_GAMEMODE_PT="Ativar o plugin também no Game Mode? Isso altera como a Steam é iniciada no modo Gaming (reversível pelo desinstalador)."
+
+# Cached answers (empty = not asked yet). Populated by preask_prompts.
+PREASK_CLOUD=""
+PREASK_GAMEMODE=""
+
+# resolve_yesno CACHE_VAR "q_en" "q_pt" def -> 0 (yes) / 1 (no).
+# Uses a previously cached y/n answer (by variable name) if present; otherwise
+# prompts now and stores the answer so a later call is consistent.
+resolve_yesno() {
+	local -n __cache="$1"
+	local q_en="$2" q_pt="$3" def="$4"
+	case "$__cache" in
+		y) return 0 ;;
+		n) return 1 ;;
+	esac
+	if prompt_yes_no "$q_en" "$q_pt" "$def"; then __cache="y"; return 0; fi
+	__cache="n"; return 1
+}
+
+# Ask the optional yes/no questions BEFORE Steam is stopped, on immutable/Deck-
+# class systems only (SteamOS, Bazzite, ...), where the on-screen keyboard needs
+# Steam running. No-op on mutable desktops and on non-interactive runs (those
+# keep the inline prompts / defaults). Answers are cached for the install steps.
+preask_prompts() {
+	is_immutable_distro || return 0
+	{ [ -e /dev/tty ] && { : >/dev/tty; } 2>/dev/null; } || return 0
+
+	print_section "$(L "A couple of questions (answer now, before Steam closes)" \
+	                   "Algumas perguntas (responda agora, antes de a Steam fechar)")"
+	log_info "$(L "On Steam Deck / SteamOS the on-screen keyboard needs Steam open, so we ask these before stopping it." \
+	             "No Steam Deck / SteamOS o teclado virtual precisa da Steam aberta, então perguntamos isto antes de fechá-la.")"
+
+	# Game Mode question only when a gamescope session exists on this host.
+	if has_gamescope_session; then
+		resolve_yesno PREASK_GAMEMODE "$Q_GAMEMODE_EN" "$Q_GAMEMODE_PT" "n" || true
+	fi
+	# Cloud-save question only when the hook isn't deployed yet. An existing
+	# install is kept current silently, so asking again would be noise.
+	if ! cloudredirect_installed; then
+		resolve_yesno PREASK_CLOUD "$Q_CLOUD_EN" "$Q_CLOUD_PT" "n" || true
+	fi
+}
+
+# Mutable-system launcher privilege preflight. This is deliberately best-effort:
+# user-local desktop coverage remains usable when sudo is unavailable or denied.
+export SLSM_SUDO_PRIMED="${SLSM_SUDO_PRIMED:-0}"
+export SLSM_SUDO_DENIED="${SLSM_SUDO_DENIED:-0}"
+preask_launcher_sudo() {
+	is_immutable_distro && return 0
+	[ "$(id -u)" -ne 0 ] || return 0
+	command -v sudo >/dev/null 2>&1 || {
+		log_info "$(L "No sudo available; user-local .desktop coverage remains the fallback." \
+		             "Sudo não disponível; a cobertura .desktop local do usuário continua como fallback.")"
+		return 0
+	}
+
+	local tty="${SLSM_SUDO_TTY:-/dev/tty}"
+	if ! [ -e "$tty" ] || ! { : > "$tty"; } 2>/dev/null; then
+		log_info "$(L "No controlling terminal; user-local .desktop coverage remains the fallback." \
+		             "Sem terminal de controle; a cobertura .desktop local do usuário continua como fallback.")"
+		return 0
+	fi
+
+	if sudo -n true >/dev/null 2>&1; then
+		SLSM_SUDO_PRIMED=1
+		return 0
+	fi
+
+	# Only this credential-requesting function emits the password hint. The
+	# package/dependency path retains its own ensure_sudo behavior later.
+	sudo_hint
+	if sudo -v <"$tty" >"$tty" 2>&1; then
+		SLSM_SUDO_PRIMED=1
+		SLSM_SUDO_DENIED=0
+		log_info "$(L "Administrator access primed for launcher coverage." \
+		             "Acesso de administrador preparado para a cobertura do launcher.")"
+	else
+		SLSM_SUDO_DENIED=1
+		log_warn "$(L "Administrator access was not granted; user-local .desktop coverage remains the fallback." \
+		             "O acesso de administrador não foi concedido; a cobertura .desktop local do usuário continua como fallback.")"
+	fi
+	return 0
+}
+
+# Compatibility entry point for older/internal callers. The installer itself
+# uses the explicit launcher-policy name above.
+preask_sudo() {
+	preask_launcher_sudo "$@"
+}
+
+# ============================================================================
+# Distro detection
+# ============================================================================
+# Path to the os-release file. Overridable so the detection helpers can be
+# unit-tested against synthetic fixtures (scripts/test-distro-detect.sh).
+OS_RELEASE_FILE="${OS_RELEASE_FILE:-/etc/os-release}"
+
+get_distro_family() {
+	if [ -f "$OS_RELEASE_FILE" ]; then
+		# shellcheck disable=SC1090
+		. "$OS_RELEASE_FILE"
+		if [ "${ID:-}" = "ubuntu" ] || [ "${ID:-}" = "debian" ] || [[ "${ID_LIKE:-}" =~ (debian|ubuntu) ]]; then
+			echo "debian"
+		elif [ "${ID:-}" = "fedora" ] || [ "${ID:-}" = "rhel" ] || [ "${ID:-}" = "centos" ] || [[ "${ID_LIKE:-}" =~ (fedora|rhel) ]]; then
+			echo "fedora"
+		elif [ "${ID:-}" = "arch" ] || [[ "${ID_LIKE:-}" =~ arch ]]; then
+			echo "arch"
+		elif [[ "${ID:-}" =~ opensuse ]] || [[ "${ID_LIKE:-}" =~ opensuse ]]; then
+			echo "opensuse"
+		else
+			echo "unknown"
+		fi
+	else
+		echo "unknown"
+	fi
+}
+
+# Echo the lowercased distro ID (e.g. bazzite, steamos, ubuntu) for messaging
+# and immutable-OS detection. "unknown" when os-release is unavailable.
+get_distro_id() {
+	if [ -f "$OS_RELEASE_FILE" ]; then
+		# Read in a subshell so the sourced vars don't leak to the caller.
+		(
+			# shellcheck disable=SC1090
+			. "$OS_RELEASE_FILE" >/dev/null 2>&1
+			printf '%s' "${ID:-unknown}"
+		) | tr '[:upper:]' '[:lower:]'
+	else
+		printf 'unknown'
+	fi
+}
+
+# True on immutable / atomic systems (Bazzite, SteamOS, Fedora Atomic, ublue,
+# ...) where the root (/usr) is read-only and the package manager must NOT be
+# used to install dependencies: rpm-ostree needs a reboot, and SteamOS's
+# `steamos-readonly disable` + keyring re-init is fragile and wiped on update.
+# We never probe /usr writability — the installer runs non-root, so /usr is
+# unwritable on EVERY distro and that would false-positive everywhere.
+is_immutable_distro() {
+	local id like
+	id="$(get_distro_id)"
+	case "$id" in
+		bazzite|steamos|steamdeck|holoiso|\
+		silverblue|kinoite|sericea|onyx|\
+		bluefin|aurora|ucore)
+			return 0 ;;
+	esac
+
+	# Fedora Atomic variants advertise themselves via VARIANT_ID even when ID
+	# is plain "fedora" (e.g. ID=fedora VARIANT_ID=silverblue).
+	if [ -f "$OS_RELEASE_FILE" ]; then
+		like="$(
+			# shellcheck disable=SC1090
+			. "$OS_RELEASE_FILE" >/dev/null 2>&1
+			printf '%s' "${VARIANT_ID:-}"
+		)"
+		case "$like" in
+			silverblue|kinoite|sericea|onyx|*atomic*) return 0 ;;
+		esac
+	fi
+
+	# Image-based / atomic tooling present -> treat as immutable.
+	if command -v rpm-ostree >/dev/null 2>&1 || command -v steamos-readonly >/dev/null 2>&1; then
+		return 0
+	fi
+
+	# Last resort: a read-only root mount (ostree deployments mount / ro).
+	if command -v findmnt >/dev/null 2>&1; then
+		case ",$(findmnt -no OPTIONS / 2>/dev/null)," in
+			*,ro,*) return 0 ;;
+		esac
+	fi
+
+	return 1
+}
+
+# ----------------------------------------------------------------------------
+# Game Mode (gamescope session) detection — distro-agnostic
+# ----------------------------------------------------------------------------
+# Deck/handheld images boot a gamescope "Game Mode" where Steam is launched by a
+# session wrapper (NOT a .desktop), so our LD_AUDIT + Lumen never run unless we
+# re-point that wrapper. The wrapper layer comes from ChimeraOS's session repos;
+# Bazzite/ChimeraOS ship it as "gamescope-session-plus", older setups as
+# "gamescope-session". We NEVER hardcode a name: we discover whichever flavour
+# is installed so the same logic adapts across Bazzite / SteamOS / similars.
+#
+# Overridable so the logic can be unit-tested against synthetic fixtures.
+GAMESCOPE_SHARE_DIRS="${GAMESCOPE_SHARE_DIRS:-/usr/share /etc}"
+
+# Echo the installed gamescope-session config base name (the dir under
+# /usr/share or /etc that holds sessions.d/steam), or "" when none is present.
+gamescope_session_base() {
+	local root base
+	for root in $GAMESCOPE_SHARE_DIRS; do
+		for base in gamescope-session-plus gamescope-session; do
+			if [ -f "$root/$base/sessions.d/steam" ] \
+			   || [ -d "$root/$base/sessions.d" ]; then
+				printf '%s' "$base"
+				return 0
+			fi
+		done
+	done
+	printf ''
+}
+
+# Echo the gamescope client-config names ($1 = config base) that lead to Steam,
+# newest-discovered last, "steam" always first.
+#
+# WHY this is not just "steam": the session is instantiated PER CLIENT
+# (gamescope-session-plus@<client>.service) and sources ONLY sessions.d/<client>
+# — the system copy, then /etc, then ours. Bazzite 44 moved its Game Mode
+# autologin from the "steam" client to "ogui-steam" (OpenGamepadUI quick-access
+# on top of Steam). "ogui-steam" sources the SYSTEM "steam" config but never our
+# user override for it, so a hook written only for "steam" is dead weight and
+# Game Mode comes up silently un-injected. Covering every installed Steam-ish
+# client keeps us correct whichever one the image (or the user) boots, now and
+# after the next rename.
+gamescope_session_clients() {
+	local base="$1" root f name
+	{
+		printf 'steam\n'
+		for root in $GAMESCOPE_SHARE_DIRS; do
+			for f in "$root/$base/sessions.d/"*; do
+				[ -f "$f" ] || continue
+				name="${f##*/}"
+				# Skip package-manager and our own leftovers.
+				case "$name" in
+					*.bak.*|*.rpmnew|*.rpmsave|*.dpkg-*|*~) continue ;;
+				esac
+				# Only clients that actually launch Steam.
+				grep -qi steam "$f" 2>/dev/null || continue
+				printf '%s\n' "$name"
+			done
+		done
+	} | awk '!seen[$0]++'
+}
+
+# True when a Game Mode hook of ours is already installed (either mechanism).
+# Used to treat a re-run as "already opted in" so the hook set can be refreshed
+# after a distro upgrade without re-asking an invasive question.
+gamemode_hook_present() {
+	local cfg="${XDG_CONFIG_HOME:-$HOME/.config}" base f
+	for base in gamescope-session-plus gamescope-session; do
+		for f in "$cfg/$base/sessions.d/"*; do
+			[ -f "$f" ] || continue
+			grep -qF "$GAMEMODE_HOOK_SENTINEL" "$f" 2>/dev/null && return 0
+		done
+	done
+	f="$cfg/systemd/user/steam-launcher.service.d/slsteammoon.conf"
+	[ -f "$f" ] && grep -qF "$GAMEMODE_HOOK_SENTINEL" "$f" 2>/dev/null && return 0
+	return 1
+}
+
+# True when this host can launch Steam in a gamescope Game Mode session.
+has_gamescope_session() {
+	[ -n "$(gamescope_session_base)" ] && return 0
+	has_steamos_gamescope && return 0
+	command -v gamescope-session-plus >/dev/null 2>&1 && return 0
+	command -v gamescope-session >/dev/null 2>&1 && return 0
+	return 1
+}
+
+# SteamOS launches Game Mode Steam from a systemd *user* unit
+# (steam-launcher.service -> /usr/lib/steamos/steam-launcher -> `exec steam`),
+# NOT from a gamescope-session/sessions.d/steam override.  Detect + hook that
+# separately.  Dirs/launcher path overridable so the logic is unit-testable
+# against synthetic fixtures.
+STEAMOS_SESSION_UNIT_DIRS="${STEAMOS_SESSION_UNIT_DIRS:-/usr/lib/systemd/user /etc/systemd/user /run/systemd/user}"
+STEAMOS_STEAM_LAUNCHER="${STEAMOS_STEAM_LAUNCHER:-/usr/lib/steamos/steam-launcher}"
+
+# Echo the path to the SteamOS Game Mode steam unit, or "" when none is present.
+steamos_steam_launcher_unit() {
+	local d
+	for d in $STEAMOS_SESSION_UNIT_DIRS; do
+		if [ -f "$d/steam-launcher.service" ]; then
+			printf '%s' "$d/steam-launcher.service"
+			return 0
+		fi
+	done
+	printf ''
+}
+
+# True when this host uses the SteamOS systemd Game Mode launcher.
+has_steamos_gamescope() {
+	[ -n "$(steamos_steam_launcher_unit)" ]
+}
+
+# Print a one-time "type your password" hint right before sudo actually asks
+# for one. Guarded: shown at most once, and ONLY when a password will really be
+# requested (not root, sudo present, credential not already cached/passwordless).
+# Writes to the terminal (not stdout) so it's safe to call from inside
+# sudo_prefix's command substitution.
+_SUDO_HINT_SHOWN=0
+sudo_hint() {
+	is_immutable_distro && return 0
+	[ "$_SUDO_HINT_SHOWN" = 1 ] && return 0
+	[ "$(id -u)" -ne 0 ] || return 0
+	command -v sudo >/dev/null 2>&1 || return 0
+	sudo -n true 2>/dev/null && return 0   # cached / passwordless: no prompt coming
+	_SUDO_HINT_SHOWN=1
+	local msg
+	msg="$(L "Enter your password below (administrator access is needed)." \
+	         "Digite sua senha abaixo (é necessário acesso de administrador).")"
+	if [ -e /dev/tty ] && { : >/dev/tty; } 2>/dev/null; then
+		printf '%s\n' "$msg" >/dev/tty
+	else
+		printf '%s\n' "$msg" >&2
+	fi
+}
+
+# Privilege-escalation prefix for system package operations. Credential prompts
+# belong to ensure_sudo or another function that actually requests access.
+sudo_prefix() {
+	if is_immutable_distro; then
+		echo ""
+	elif [ "$(id -u)" -eq 0 ]; then
+		echo ""
+	elif command -v sudo >/dev/null 2>&1; then
+		echo "sudo"
+	else
+		echo ""
+	fi
+}
+
+# Acquire a valid sudo credential or ABORT the install. Call this right before
+# any step that actually needs root, so the user is never left with a partial
+# install when they decline the password. No-op as root, when sudo is absent
+# (the caller handles that fallback), or when the credential is already cached.
+ensure_sudo() {
+	is_immutable_distro && return 0
+	[ "$(id -u)" -ne 0 ] || return 0
+	command -v sudo >/dev/null 2>&1 || return 0
+	sudo -n true 2>/dev/null && return 0   # already cached / passwordless
+	sudo_hint
+	sudo -v </dev/tty >/dev/tty 2>&1 || fail "$(L \
+		"Administrator password not provided; installation cancelled." \
+		"Senha de administrador não fornecida; instalação cancelada.")"
+}
+
+# ============================================================================
+# Pre-flight checks
+# ============================================================================
+check_not_root() {
+	if [ "$(id -u)" -eq 0 ]; then
+		fail "$(L "Do not run this installer as root. Run it as your normal user." \
+		          "Não rode este instalador como root. Rode como seu usuário normal.")"
+	fi
+}
+
+check_arch() {
+	if [ "$(uname -m)" != "x86_64" ]; then
+		fail "$(L "Unsupported architecture: $(uname -m). Only x86_64 is supported." \
+		          "Arquitetura não suportada: $(uname -m). Apenas x86_64 é suportado.")"
+	fi
+	log_success "$(L "Architecture x86_64 OK" "Arquitetura x86_64 OK")"
+}
+
+check_internet() {
+	# This probe IS curl, so a missing curl is not a network fault — say which
+	# one it is instead of blaming the connection. Only reachable on a mutable
+	# distro: NixOS and immutable systems already aborted in check_dependencies,
+	# because there curl cannot be installed for the user. Here the Dependencies
+	# step installs it, so skip the probe rather than failing.
+	if ! command -v curl >/dev/null 2>&1; then
+		log_warn "$(L "curl is not installed yet, so the connectivity check was skipped; it is installed in the Dependencies step." \
+		             "O curl ainda não está instalado, então a verificação de conectividade foi pulada; ele é instalado na etapa de Dependências.")"
+		return 0
+	fi
+	if ! curl -fsS --head "https://github.com" >/dev/null 2>&1 \
+		&& ! curl -fsS --head "$RELEASE_MIRROR_MANIFEST" >/dev/null 2>&1; then
+		fail "$(L "No internet connection." "Sem conexão com a internet.")"
+	fi
+	log_success "$(L "Internet reachable" "Internet acessível")"
+}
+
+# Remove the installer-managed Steam wrapper from a PATH value. During a
+# reinstall setup.sh recreates that wrapper before looking up Steam, so merely
+# teaching our own detector to skip it is not enough: setup.sh must see the
+# underlying native launcher too.
+path_without_slsteam_wrapper() {
+	local input_path="${1-}" wrapper_dir="$HOME/.local/share/SLSsteam/path"
+	local dir output=""
+	while IFS= read -r dir; do
+		[ -n "$dir" ] || dir="."
+		[ "${dir%/}" = "$wrapper_dir" ] && continue
+		if [ -n "$output" ]; then
+			output="$output:$dir"
+		else
+			output="$dir"
+		fi
+	done < <(printf '%s\n' "$input_path" | tr ':' '\n')
+	printf '%s\n' "$output"
+}
+
+# Compare launcher paths after resolving symlinks and spelling aliases. This
+# keeps PATH entries such as `dir/../path` or a symlink to the injected wrapper
+# from being mistaken for a vanilla Steam launcher.
+is_slsteam_injected_wrapper() {
+	local launcher="$1" wrapper resolved_launcher resolved_wrapper
+	wrapper="$HOME/.local/share/SLSsteam/path/steam"
+	resolved_launcher="$(readlink -f "$launcher" 2>/dev/null || true)"
+	resolved_wrapper="$(readlink -f "$wrapper" 2>/dev/null || true)"
+	[ -n "$resolved_launcher" ] && [ -n "$resolved_wrapper" ] && \
+		[ "$resolved_launcher" = "$resolved_wrapper" ]
+}
+
+# Managed distro launchers are safe to use for shutdown only when their
+# captured original is still present and is not another managed shim.
+is_slsteam_system_launcher_shim() {
+	[ -f "$1" ] && head -3 "$1" 2>/dev/null | grep -qF '# slsteam-moon system launcher shim'
+}
+
+slsteam_shim_original() {
+	local launcher="$1" original
+	original="$(sed -n 's/^SLSM_ORIG="\([^"]*\)"$/\1/p' "$launcher" 2>/dev/null | head -n 1)"
+	if [ -z "$original" ]; then
+		original="$(sed -n 's/^exec "\([^"]*\)" "\$@".*$/\1/p' "$launcher" 2>/dev/null | head -n 1)"
+	fi
+	[ -n "$original" ] || return 1
+	printf '%s\n' "$original"
+}
+
+is_safe_native_launcher() {
+	local launcher="$1" original
+	[ -f "$launcher" ] && [ -x "$launcher" ] || return 1
+	is_slsteam_injected_wrapper "$launcher" && return 1
+	if ! is_slsteam_system_launcher_shim "$launcher"; then
+		return 0
+	fi
+	original="$(slsteam_shim_original "$launcher" 2>/dev/null || true)"
+	[ -f "$original" ] && [ -x "$original" ] && \
+		! is_slsteam_system_launcher_shim "$original" && \
+		! is_slsteam_injected_wrapper "$original"
+}
+
+# Valve's distro launcher (bin_steam.sh, which /usr/bin/steam symlinks to on
+# Fedora/Nobara) derives STEAMPACKAGE from its own argv[0] and aborts with
+# "Unknown Steam package" for any other name, so a captured original must never
+# be executed as `steam.orig`. Map such a path to the `steam`-named alias the
+# launcher shim keeps beside it, creating that alias when it is absent (it lives
+# in our own backup tree). Failure is reported so `-shutdown` can be skipped
+# rather than issued against a launcher that would abort.
+slsteam_name_safe_launcher_path() {
+	local path="$1" sibling
+	[ -n "$path" ] || return 1
+	case "${path##*/}" in
+		steam|steambeta|bin_steam.sh|steam.sh)
+			printf '%s\n' "$path"
+			return 0
+			;;
+	esac
+	sibling="${path%/*}/steam"
+	[ -x "$sibling" ] || return 1
+	[ "$(readlink -f "$sibling" 2>/dev/null || true)" = \
+	  "$(readlink -f "$path" 2>/dev/null || true)" ] || return 1
+	printf '%s\n' "$sibling"
+}
+
+# Resolve a launcher for `-shutdown` without routing through the injected
+# wrapper or a managed system shim. A missing/unsafe candidate deliberately
+# returns failure so stop_steam can use its bounded signal escalation.
+resolve_shutdown_launcher() {
+	local search_path dir candidate original safe_original fallback
+	search_path="$(path_without_slsteam_wrapper "${PATH:-}")"
+	while IFS= read -r dir; do
+		[ -n "$dir" ] || dir="."
+		candidate="${dir%/}/steam"
+		[ -x "$candidate" ] || continue
+		if is_slsteam_system_launcher_shim "$candidate"; then
+			original="$(slsteam_shim_original "$candidate" 2>/dev/null || true)"
+			is_safe_native_launcher "$original" || continue
+			# A captured original may only be run under a name Valve's launcher
+			# accepts. Its `steam` alias is the normal answer; failing that, the
+			# data-dir steam.sh takes `-shutdown` and ignores its own argv[0],
+			# which still beats escalating straight to signals (an unclean exit
+			# costs the next boot a full client re-verification).
+			safe_original="$(slsteam_name_safe_launcher_path "$original" 2>/dev/null || true)"
+			if [ -n "$safe_original" ]; then
+				printf '%s\n' "$safe_original"
+				return 0
+			fi
+			for fallback in "$HOME/.local/share/Steam/steam.sh" \
+			                "$HOME/.steam/steam/steam.sh" \
+			                "$HOME/.steam/debian-installation/steam.sh"; do
+				[ -x "$fallback" ] || continue
+				printf '%s\n' "$fallback"
+				return 0
+			done
+			continue
+		fi
+		is_safe_native_launcher "$candidate" || continue
+		printf '%s\n' "$candidate"
+		return 0
+	done < <(printf '%s\n' "$search_path" | tr ':' '\n')
+	return 1
+}
+
+# Print the first usable native Steam launcher. Sandboxed packages are checked
+# separately: having Flatpak/Snap installed must not hide a working native
+# installation, and a coexistence diagnostic needs the concrete native path.
+find_native_steam_launcher() {
+	# A native package-manager install puts the launcher in a system bin dir.
+	# Both search lists are overridable so tests can be isolated from whatever
+	# Steam happens to be installed on the host running them.
+	local fixed_candidates="${STEAM_FIXED_CANDIDATES-/usr/bin/steam /usr/games/steam /usr/local/bin/steam /bin/steam}"
+	local search_path="${STEAM_SEARCH_PATH-${PATH:-}}"
+	local c dir resolved wrapper_dir
+	for c in $fixed_candidates; do
+		if is_safe_native_launcher "$c"; then
+			printf '%s\n' "$c"
+			return 0
+		fi
+	done
+	# NixOS has no /usr/bin: `programs.steam.enable` symlinks the launcher into
+	# the user's profile (e.g. /run/current-system/sw/bin/steam) instead. Accept
+	# `steam` off PATH only when it resolves into the Nix store, so we don't
+	# misdetect a flatpak/snap shim that happens to shadow the name. Inspect
+	# every PATH entry: setup.sh prepends its own wrapper directory, so the
+	# first match on a reinstall is not necessarily the native launcher.
+	if [ "$(get_distro_id)" = "nixos" ]; then
+		wrapper_dir="$HOME/.local/share/SLSsteam/path"
+		while IFS= read -r dir; do
+			[ -n "$dir" ] || dir="."
+			c="${dir%/}/steam"
+			[ -x "$c" ] && is_safe_native_launcher "$c" || continue
+			case "$c" in
+				"$wrapper_dir"/*) continue ;;
+			esac
+			resolved="$(readlink -f "$c" 2>/dev/null || printf '%s\n' "$c")"
+			case "$resolved" in
+				"$wrapper_dir"/*) continue ;;
+				/nix/store/*)
+					printf '%s\n' "$c"
+					return 0
+					;;
+			esac
+		done < <(printf '%s\n' "$search_path" | tr ':' '\n')
+	fi
+	return 1
+}
+
+flatpak_steam_installed() {
+	command -v flatpak >/dev/null 2>&1 \
+		&& flatpak list --app --columns=application 2>/dev/null \
+			| grep -Fx "com.valvesoftware.Steam" >/dev/null
+}
+
+snap_steam_installed() {
+	command -v snap >/dev/null 2>&1 \
+		&& snap list 2>/dev/null \
+			| grep -iE '^steam[[:space:]]' >/dev/null
+}
+
+sandboxed_steam_installations() {
+	local detected=""
+	flatpak_steam_installed && detected="Flatpak"
+	if snap_steam_installed; then
+		if [ -n "$detected" ]; then detected="$detected/Snap"
+		else detected="Snap"
+		fi
+	fi
+	printf '%s\n' "$detected"
+}
+
+# How is Steam installed? native / flatpak / snap / none. Native deliberately
+# wins when package types coexist because this stack targets that installation.
+detect_steam_type() {
+	if find_native_steam_launcher >/dev/null 2>&1; then
+		echo "native"
+		return
+	fi
+	if flatpak_steam_installed; then
+		echo "flatpak"
+		return
+	fi
+	if snap_steam_installed; then
+		echo "snap"
+		return
+	fi
+	echo "none"
+}
+
+suggest_native_steam_install() {
+	if is_immutable_distro; then
+		echo "$(L "Steam ships with this system — if it's missing, repair/reinstall the OS image" \
+		          "A Steam vem com este sistema — se estiver faltando, repare/reinstale a imagem do SO")"
+		return
+	fi
+	case "$(get_distro_family)" in
+		debian)   echo "sudo apt update && sudo apt install steam-installer" ;;
+		fedora)   echo "sudo dnf install steam" ;;
+		arch)     echo "sudo pacman -S steam" ;;
+		opensuse) echo "sudo zypper install steam" ;;
+		*)        echo "$(L "see your distro's documentation to install native Steam" \
+		                    "consulte a documentação da sua distro para instalar a Steam nativa")" ;;
+	esac
+}
+
+check_steam_native() {
+	local steam_type isolated=""
+	steam_type="$(detect_steam_type)"
+
+	case "$steam_type" in
+		native)
+			log_success "$(L "Native Steam detected" "Steam nativa detectada")"
+			;;
+		flatpak|snap)
+			isolated="$(sandboxed_steam_installations)"
+			[ -n "$isolated" ] || isolated="${steam_type^}"
+			echo ""
+			log_error "$(L "No native Steam installation was detected." \
+			              "Nenhuma instalação nativa da Steam foi detectada.")"
+			echo ""
+			echo -e "  $(L "A ${isolated} Steam installation is present." \
+			                   "Há uma instalação da Steam via ${isolated}.")"
+			echo -e "  $(L "slsteam-moon only works with NATIVE Steam" \
+			                   "slsteam-moon só funciona com a Steam NATIVA")"
+			echo -e "  $(L "(the one from your package manager)." \
+			                   "(a do seu gerenciador de pacotes).")"
+			echo ""
+			echo -e "  $(L "You can keep the ${isolated} version installed; native Steam can coexist with it." \
+			                   "Você pode manter a versão ${isolated} instalada; a Steam nativa pode coexistir com ela.")"
+			echo -e "  $(L "You do not need to uninstall it." \
+			                   "Não é necessário desinstalá-la.")"
+			echo ""
+			echo -e "  $(L "1) Install native Steam:" "1) Instale a Steam nativa:")"
+			echo -e "       ${GREEN}$(suggest_native_steam_install)${NC}"
+			echo -e "  $(L "2) Open the native launcher once, not the ${isolated} app icon." \
+			                   "2) Abra uma vez o launcher nativo, não o ícone da versão ${isolated}.")"
+			echo ""
+			fail "$(L "Aborted. Please install native Steam and re-run this installer." \
+			          "Abortado. Instale a Steam nativa e rode este instalador novamente.")"
+			;;
+		none|*)
+			echo ""
+			log_error "$(L "No native Steam installation found." \
+			              "Nenhuma instalação nativa da Steam encontrada.")"
+			echo ""
+			echo -e "  $(L "Install native Steam (from your package manager) first:" \
+			               "Instale a Steam nativa (do seu gerenciador de pacotes) primeiro:")"
+			echo -e "       ${GREEN}$(suggest_native_steam_install)${NC}"
+			echo ""
+			fail "$(L "Aborted. Please install native Steam and re-run this installer." \
+			          "Abortado. Instale a Steam nativa e rode este instalador novamente.")"
+			;;
+	esac
+}
+
+# Steam must have been launched at least once before we touch its data dirs.
+# On first launch the Valve launcher (bin_steam.sh / the steam-installer stub)
+# runs its bootstrap: it extracts the client and, crucially, makes
+# ~/.steam/steam a SYMLINK to the real data dir (~/.local/share/Steam on
+# Fedora/Arch, ~/.steam/debian-installation on Debian/Mint/Ubuntu). The symlink
+# target differs per distro, but it is ALWAYS a symlink once bootstrapped.
+#
+# If we run before that, two things break:
+#   1. Steam's own data dir is just the package skeleton (no bootstrap.tar.xz,
+#      no full client) — not yet a working install.
+#   2. The plugin/Lumen would resolve the Steam root to a not-yet-existing
+#      ~/.steam/steam and CREATE it as a real directory to drop webkit assets
+#      in. That stray directory then blocks Valve's bootstrap, which needs to
+#      put a symlink there — Steam dies with "Couldn't set up Steam data -
+#      please contact technical support".
+#
+# So: require that ~/.steam/steam is a symlink that resolves to a real Steam
+# root (has steam.sh). This is layout-independent (we don't care WHERE it
+# points, only that Steam bootstrapped it).
+check_steam_bootstrapped() {
+	local link="$HOME/.steam/steam"
+	local root isolated="" native_launcher=""
+	root="$(readlink -e -q "$link" 2>/dev/null || true)"
+
+	# Bootstrapped: ~/.steam/steam is a symlink resolving to a dir with steam.sh.
+	if [ -L "$link" ] && [ -n "$root" ] && [ -f "$root/steam.sh" ]; then
+		log_success "$(L "Steam has been initialized" "Steam já foi inicializada")"
+		return 0
+	fi
+
+	# A foreign real path blocks Valve from creating its canonical symlink. Do
+	# not call this a first-launch issue and never replace it automatically: it
+	# may contain user data or belong to another Steam layout.
+	if [ -e "$link" ] && [ ! -L "$link" ]; then
+		echo ""
+		log_error "$(L "The native Steam bootstrap path is blocked." \
+		              "O caminho de inicialização da Steam nativa está bloqueado.")"
+		echo ""
+		echo -e "  $(L "$link exists but is not the expected symbolic link." \
+		                   "$link existe, mas não é o link simbólico esperado.")"
+		echo -e "  $(L "The installer will not modify or replace it automatically, to protect its contents." \
+		                   "O instalador não vai modificá-lo nem substituí-lo automaticamente, para proteger o conteúdo.")"
+		echo -e "  $(L "Inspect or repair the native Steam installation, then run this installer again." \
+		                   "Inspecione ou repare a instalação nativa da Steam e rode este instalador novamente.")"
+		echo ""
+		fail "$(L "Aborted. The native Steam bootstrap path needs repair." \
+		          "Abortado. O caminho de inicialização da Steam nativa precisa ser reparado.")"
+	fi
+
+	if [ -L "$link" ] && [ -z "$root" ]; then
+		echo ""
+		log_error "$(L "The native Steam symbolic link is broken." \
+		              "O link simbólico da Steam nativa está quebrado.")"
+		echo ""
+		echo -e "  $(L "$link points to a path that does not exist." \
+		                   "$link aponta para um caminho que não existe.")"
+		echo -e "  $(L "Repair the native Steam installation, then run this installer again." \
+		                   "Repare a instalação nativa da Steam e rode este instalador novamente.")"
+		echo ""
+		fail "$(L "Aborted. The native Steam symbolic link needs repair." \
+		          "Abortado. O link simbólico da Steam nativa precisa ser reparado.")"
+	fi
+
+	if [ -L "$link" ] && [ -n "$root" ] && [ ! -f "$root/steam.sh" ]; then
+		echo ""
+		log_error "$(L "The native Steam root is incomplete: steam.sh is missing." \
+		              "A raiz da Steam nativa está incompleta: steam.sh está ausente.")"
+		echo ""
+		echo -e "  $(L "Repair or finish initializing native Steam, then run this installer again." \
+		                   "Repare ou termine de inicializar a Steam nativa e rode este instalador novamente.")"
+		echo ""
+		fail "$(L "Aborted. The native Steam installation is incomplete." \
+		          "Abortado. A instalação nativa da Steam está incompleta.")"
+	fi
+
+	# When package types coexist, opening the sandboxed app does not initialize
+	# the native data root. Keep coexistence supported, but point at the exact
+	# launcher that check_steam_native already validated instead of telling the
+	# user to click an ambiguous menu icon.
+	isolated="$(sandboxed_steam_installations)"
+	if [ -n "$isolated" ]; then
+		native_launcher="$(find_native_steam_launcher 2>/dev/null || true)"
+		echo ""
+		log_error "$(L "Native Steam has not been initialized for this user." \
+		              "A Steam nativa ainda não foi inicializada para este usuário.")"
+		echo ""
+		echo -e "  $(L "A separate ${isolated} Steam installation was found." \
+		                   "Foi encontrada outra instalação da Steam via ${isolated}.")"
+		echo -e "  $(L "Opening that copy does not initialize the native installation." \
+		                   "Abrir essa cópia não inicializa a instalação nativa.")"
+		echo -e "  $(L "You do not need to uninstall it; both versions can coexist." \
+		                   "Não é necessário desinstalá-la; as duas versões podem coexistir.")"
+		echo ""
+		echo -e "  $(L "Close every Steam window, then open the native launcher directly:" \
+		                   "Feche todas as janelas da Steam e abra diretamente o launcher nativo:")"
+		if [ -n "$native_launcher" ]; then
+			echo -e "       ${GREEN}${native_launcher}${NC}"
+		else
+			echo -e "       ${GREEN}steam${NC}"
+		fi
+		echo -e "  $(L "Wait for the login window, close Steam, and run this installer again." \
+		                   "Espere a janela de login, feche a Steam e rode este instalador novamente.")"
+		echo ""
+		fail "$(L "Aborted. Initialize native Steam, then re-run this installer." \
+		          "Abortado. Inicialize a Steam nativa e rode este instalador novamente.")"
+	fi
+
+	echo ""
+	log_error "$(L "Steam hasn't been opened yet." \
+	              "A Steam ainda não foi aberta.")"
+	echo ""
+	echo -e "  $(L "Steam needs to run once before installing, so it can finish" \
+	               "A Steam precisa rodar uma vez antes da instalação, para terminar")"
+	echo -e "  $(L "setting itself up." "de se configurar.")"
+	echo ""
+	echo -e "  $(L "Please do this first:" "Faça isto primeiro:")"
+	echo -e "    $(L "1) Open Steam normally (from the menu / app icon)." \
+	               "1) Abra a Steam normalmente (pelo menu / ícone do app).")"
+	echo -e "    $(L "2) Wait until the login window appears." \
+	               "2) Espere até a janela de login aparecer.")"
+	echo -e "    $(L "   (You do NOT need to log in.)" \
+	               "   (Você NÃO precisa fazer login.)")"
+	echo -e "    $(L "3) Close Steam, then run this installer again." \
+	               "3) Feche a Steam e rode este instalador de novo.")"
+	echo ""
+	fail "$(L "Aborted. Open Steam once, then re-run this installer." \
+	          "Abortado. Abra a Steam uma vez e rode este instalador novamente.")"
+}
+
+# ============================================================================
+# Runtime dependencies
+# ============================================================================
+# nixpkgs attribute name for a tool (NixOS has no package-manager install —
+# see the "nixos" branch of install_dependencies below). Only "tar" differs:
+# nixpkgs ships it as gnutar, there is no top-level `tar` attribute.
+nixos_pkg_for() {
+	case "$1" in
+		tar)         echo "gnutar" ;;
+		notify-send) echo "libnotify" ;;
+		*)           echo "$1" ;;
+	esac
+}
+
+# Map a generic tool name to the package that provides it on each family.
+pkg_for() {
+	local tool="$1" family="$2"
+	case "$tool" in
+		jq)
+			echo "jq" ;;
+		curl)
+			echo "curl" ;;
+		tar)
+			echo "tar" ;;
+		unzip)
+			echo "unzip" ;;
+		steam-run)
+			echo "steam-run" ;;
+		notify-send)
+			# slsteam-moon shells out to notify-send for in-Steam status
+			# popups (download progress, errors). Missing on minimal
+			# installs; package name varies per family.
+			case "$family" in
+				debian)   echo "libnotify-bin" ;;
+				fedora)   echo "libnotify" ;;
+				arch)     echo "libnotify" ;;
+				opensuse) echo "libnotify-tools" ;;
+				*)        echo "libnotify" ;;
+			esac
+			;;
+	esac
+}
+
+pm_install() {
+	local family="$1"; shift
+	is_immutable_distro && return 1
+	ensure_sudo
+	local sudo_cmd; sudo_cmd="$(sudo_prefix)"
+	case "$family" in
+		debian)
+			$sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
+			$sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+			;;
+		fedora)
+			$sudo_cmd dnf install -y "$@"
+			;;
+		arch)
+			$sudo_cmd pacman -S --noconfirm "$@"
+			;;
+		opensuse)
+			$sudo_cmd zypper install -y "$@"
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+# Tell the user how to install packages by hand on an immutable / atomic OS,
+# where we deliberately don't run the package manager for them. $* = packages.
+immutable_install_hint() {
+	local pkgs="$*" id; id="$(get_distro_id)"
+	case "$id" in
+		steamos|steamdeck|holoiso)
+			# SteamOS: unlock the read-only root, re-init the pacman keyring,
+			# then install. This is reset on every OS update.
+			echo "sudo steamos-readonly disable && sudo pacman-key --init && sudo pacman-key --populate && sudo pacman -S ${pkgs}"
+			;;
+		*)
+			# Bazzite / Fedora Atomic / ublue: layer the packages (needs a
+			# reboot to take effect), or use a distrobox/brew if you prefer.
+			echo "rpm-ostree install ${pkgs}   ($(L "then reboot" "depois reinicie"))"
+			;;
+	esac
+}
+
+# Which required tools are missing, and the package that provides each one.
+# Published by detect_missing_tools so the preflight gate and the later install
+# step share one probe instead of scanning PATH twice.
+DEP_MISSING_TOOLS=()
+DEP_MISSING_PKGS=()
+
+# Pure detection: no sudo, no package manager, no filesystem writes. Safe to
+# call from preflight, before the installer has decided this machine is even
+# supported.
+detect_missing_tools() {
+	local family distro_id
+	family="$(get_distro_family)"
+	distro_id="$(get_distro_id)"
+
+	local required_tools=(jq curl tar unzip notify-send)
+	# Lumen's prebuilt ELF runs through steam-run on NixOS, so it is a hard
+	# prerequisite there and must be detected with the rest.
+	[ "$distro_id" = "nixos" ] && required_tools+=(steam-run)
+	log_info "$(L "Checking required tools (${required_tools[*]})" \
+	             "Verificando ferramentas necessárias (${required_tools[*]})")"
+
+	# The override keeps detection tests isolated from tools installed on the
+	# host running them. Production uses PATH.
+	local dependency_path="${DEPENDENCY_PATH-${PATH:-}}"
+	DEP_MISSING_TOOLS=()
+	DEP_MISSING_PKGS=()
+	local tool dir found
+	for tool in "${required_tools[@]}"; do
+		found=0
+		while IFS= read -r dir; do
+			[ -n "$dir" ] || dir="."
+			if [ -x "${dir%/}/$tool" ]; then
+				found=1
+				break
+			fi
+		done < <(printf '%s\n' "$dependency_path" | tr ':' '\n')
+		if [ "$found" -eq 0 ]; then
+			DEP_MISSING_TOOLS+=("$tool")
+			DEP_MISSING_PKGS+=("$(pkg_for "$tool" "$family")")
+		fi
+	done
+}
+
+# Preflight gate. Aborts BEFORE Steam is stopped or an existing installation is
+# touched when this system cannot install the missing tools for the user:
+# NixOS (declarative; packages come from a rebuild or `nix profile install`) and
+# immutable/atomic systems (read-only root). Both of those paths only print
+# instructions, so this whole function is side-effect free. Mutable distros are
+# deferred to install_dependencies, which runs after the machine has been
+# validated — that keeps sudo and the package manager off machines the installer
+# is going to reject anyway.
+check_dependencies() {
+	detect_missing_tools
+
+	# Everything present (the common case on Bazzite/SteamOS, which ship these
+	# tools) — nothing to do.
+	if [ "${#DEP_MISSING_TOOLS[@]}" -eq 0 ]; then
+		log_success "$(L "Required tools present" "Ferramentas necessárias presentes")"
+		return 0
+	fi
+
+	local distro_id; distro_id="$(get_distro_id)"
+	if [ "$distro_id" != "nixos" ] && ! is_immutable_distro; then
+		# Mutable distro: the package manager can fix this later.
+		return 0
+	fi
+
+	local tool
+	# NixOS: there is no ad-hoc package-manager install — packages come from
+	# environment.systemPackages + a system rebuild (or `nix profile install`
+	# for a one-off). Same "never touch the system for the user" contract as
+	# the immutable branch below, but with NixOS-flavored instructions.
+	if [ "$distro_id" = "nixos" ]; then
+		local essential=()
+		for tool in "${DEP_MISSING_TOOLS[@]}"; do
+			[ "$tool" = "notify-send" ] || essential+=("$tool")
+		done
+		if [ "${#essential[@]}" -eq 0 ]; then
+			log_warn "$(L "notify-send not found; in-Steam popups will be disabled (everything else works)." \
+			             "notify-send não encontrado; os popups dentro da Steam ficarão desativados (o resto funciona).")"
+			log_success "$(L "Required tools present" "Ferramentas necessárias presentes")"
+			return 0
+		fi
+		local nix_attrs="" flake_attrs="" t
+		for t in "${essential[@]}"; do
+			nix_attrs="$nix_attrs nixpkgs#$(nixos_pkg_for "$t")"
+			flake_attrs="$flake_attrs $(nixos_pkg_for "$t")"
+		done
+		echo ""
+		log_error "$(L "Missing required tools: ${essential[*]}" \
+		              "Ferramentas necessárias ausentes: ${essential[*]}")"
+		echo ""
+		echo -e "  $(L "Add them to environment.systemPackages in configuration.nix and rebuild:" \
+		               "Adicione-as a environment.systemPackages no configuration.nix e reconstrua:")"
+		echo -e "       ${GREEN}${flake_attrs# }${NC}"
+		echo -e "  $(L "...or install them for this user only, right now:" \
+		               "...ou instale-as só para este usuário, agora mesmo:")"
+		echo -e "       ${GREEN}nix profile install${nix_attrs}${NC}"
+		echo ""
+		fail "$(L "Aborted. Install the tools above, then re-run this installer." \
+		          "Abortado. Instale as ferramentas acima e rode este instalador novamente.")"
+	fi
+
+	# Immutable / atomic OS: never invoke the package manager (rpm-ostree needs
+	# a reboot; SteamOS's read-only unlock is fragile and wiped on update).
+	# notify-send only powers optional in-Steam popups, so if that's the ONLY
+	# gap we degrade gracefully; anything essential missing aborts with
+	# distro-correct manual instructions.
+	local essential=()
+	for tool in "${DEP_MISSING_TOOLS[@]}"; do
+		[ "$tool" = "notify-send" ] || essential+=("$tool")
+	done
+	if [ "${#essential[@]}" -eq 0 ]; then
+		log_warn "$(L "notify-send not found; in-Steam popups will be disabled (everything else works)." \
+		             "notify-send não encontrado; os popups dentro da Steam ficarão desativados (o resto funciona).")"
+		log_success "$(L "Required tools present" "Ferramentas necessárias presentes")"
+		return 0
+	fi
+	echo ""
+	log_error "$(L "Missing required tools on an immutable system: ${essential[*]}" \
+	              "Ferramentas necessárias ausentes num sistema imutável: ${essential[*]}")"
+	echo ""
+	echo -e "  $(L "This system's root is read-only, so install them yourself:" \
+	               "A raiz deste sistema é somente-leitura, então instale-as você mesmo:")"
+	echo -e "       ${GREEN}$(immutable_install_hint "${DEP_MISSING_PKGS[*]}")${NC}"
+	echo ""
+	fail "$(L "Aborted. Install the tools above, then re-run this installer." \
+	          "Abortado. Instale as ferramentas acima e rode este instalador novamente.")"
+}
+
+# Install the tools detected as missing by the preflight gate. Only reached on
+# mutable distros (NixOS and immutable systems already aborted in
+# check_dependencies), and only after the machine has been validated, so sudo
+# and the package manager never run on a host the installer will reject.
+install_dependencies() {
+	# Standalone/defensive: if the preflight gate did not run, probe now.
+	[ "${#DEP_MISSING_TOOLS[@]}" -gt 0 ] || detect_missing_tools
+	if [ "${#DEP_MISSING_TOOLS[@]}" -eq 0 ]; then
+		log_success "$(L "Required tools present" "Ferramentas necessárias presentes")"
+		return 0
+	fi
+
+	local family; family="$(get_distro_family)"
+	log_warn "$(L "Installing missing tools: ${DEP_MISSING_PKGS[*]}" \
+	             "Instalando ferramentas ausentes: ${DEP_MISSING_PKGS[*]}")"
+	if [ "$family" = "unknown" ]; then
+		fail "$(L "Unknown distro — please install manually: ${DEP_MISSING_PKGS[*]}" \
+		          "Distro desconhecida — instale manualmente: ${DEP_MISSING_PKGS[*]}")"
+	fi
+	if ! pm_install "$family" "${DEP_MISSING_PKGS[@]}"; then
+		fail "$(L "Failed to install: ${DEP_MISSING_PKGS[*]}. Install them manually and re-run." \
+		          "Falha ao instalar: ${DEP_MISSING_PKGS[*]}. Instale manualmente e rode de novo.")"
+	fi
+	log_success "$(L "Required tools present" "Ferramentas necessárias presentes")"
+}
+
+# ============================================================================
+# Cleanup: remove leftovers from the old LuaToolsLinux / headcrab port
+# ============================================================================
+# The previous Linux port (Star123451/LuaToolsLinux + ciscosweater/aglairdev
+# enter-the-wired + Deadboy666/h3adcr-b) drops files that fight this stack:
+#   - an old Millennium plugin dir (with a Python .venv)
+#   - a headcrab-patched ~/.steam/steam/steam.sh + client.sh that hijacks
+#     Steam's bootstrapper
+#   - a steam.cfg with BootStrapperInhibitAll=enable (blocks Steam updates)
+#   - ~/.headcrab and a headcrab desktop entry/icon (CloudRedirect is kept —
+#     we manage it ourselves for cloud saves, see install_cloudredirect)
+#   - an enter-the-wired SLSsteam install at ~/.local/share/SLSsteam
+#   - on Arch, a system slssteam / slssteam-git package
+#
+# This is best-effort: every removal is guarded and never aborts the install.
+# The user's depot keys (~/.config/SLSsteam) and ACCELA are left untouched.
+
+# Detect a foreign (headcrab-style) internal steam.sh and put the genuine
+# Valve one back. The real steam.sh is a large launcher that references
+# bootstrap.tar.xz; the hijacked wrapper is tiny and sources client.sh /
+# injects SLSsteam instead. We restore from the data-dir bootstrap.tar.xz
+# (what Steam itself re-bootstraps from), then the system bootstrap tarball,
+# and as a last resort just remove it so Steam regenerates it on next launch.
+restore_steam_sh() {
+	local steam_root="$1"
+	local sh="$steam_root/steam.sh"
+
+	[ -f "$sh" ] || return 0
+
+	# Genuine Valve steam.sh always mentions bootstrap.tar.xz. If it does and
+	# it does not inject SLSsteam, it's already clean — leave it alone.
+	if grep -q "bootstrap.tar.xz" "$sh" 2>/dev/null \
+	   && ! grep -qiE "SLSsteam|client\.sh|headcrab|LD_AUDIT" "$sh" 2>/dev/null; then
+		return 0
+	fi
+
+	log_step "$(L "Restoring Steam's original steam.sh (was hijacked by the old port)" \
+	             "Restaurando o steam.sh original da Steam (sequestrado pelo port antigo)")"
+
+	# Resolve the data dir steam.sh actually lives in (follow the symlink).
+	local data_dir
+	data_dir="$(readlink -f "$steam_root" 2>/dev/null || echo "$steam_root")"
+
+	mv -f "$sh" "$sh.old-port-bak" 2>/dev/null || rm -f "$sh" 2>/dev/null || true
+
+	# 1) Steam's own bootstrap copy in the data dir.
+	local boot="$data_dir/bootstrap.tar.xz"
+	if [ -f "$boot" ] && tar xJf "$boot" -C "$data_dir" steam.sh 2>/dev/null; then
+		chmod +x "$data_dir/steam.sh" 2>/dev/null || true
+		log_success "$(L "Restored steam.sh from bootstrap.tar.xz" \
+		             "steam.sh restaurado a partir do bootstrap.tar.xz")"
+		return 0
+	fi
+
+	# 2) The system-wide bootstrap tarball shipped by the steam package.
+	local sys_boot
+	for sys_boot in \
+		/usr/lib/steam/bootstraplinux_ubuntu12_32.tar.xz \
+		/usr/share/steam/bootstraplinux_ubuntu12_32.tar.xz; do
+		if [ -f "$sys_boot" ] && tar xJf "$sys_boot" -C "$data_dir" steam.sh 2>/dev/null; then
+			chmod +x "$data_dir/steam.sh" 2>/dev/null || true
+			log_success "$(L "Restored steam.sh from the system bootstrap" \
+			             "steam.sh restaurado a partir do bootstrap do sistema")"
+			return 0
+		fi
+	done
+
+	# 3) Nothing to restore from — leaving it absent makes Steam re-extract a
+	#    clean steam.sh from bootstrap.tar.xz on the next launch.
+	log_warn "$(L "Removed hijacked steam.sh; Steam will regenerate it on next launch" \
+	             "steam.sh sequestrado removido; a Steam vai regenerá-lo no próximo início")"
+}
+
+# Stop any running Steam so the cleanup/install can safely modify Steam's
+# files (steam.sh, the Millennium plugin dir, config.json). Tries a graceful
+# shutdown first, then SIGTERM, then SIGKILL. Mirrors slsteam-moon setup.sh.
+stop_steam() {
+	if ! pgrep -x steam >/dev/null 2>&1 \
+	   && ! pgrep -f 'steamwebhelper' >/dev/null 2>&1 \
+	   && ! pgrep -f '/steam$|/steam ' >/dev/null 2>&1; then
+		log_success "$(L "No running Steam process detected" "Nenhum processo da Steam em execução")"
+		return 0
+	fi
+
+	log_info "$(L "Stopping running Steam" "Parando a Steam em execução")"
+
+	# Graceful: ask Steam to shut itself down — but bound it. On Debian/Mint
+	# `steam -shutdown` re-enters the steam-runtime container to deliver the
+	# request, which can block for a long time (or stall) while that runtime
+	# bootstraps, hanging the installer at this step. Cap it with `timeout`;
+	# the SIGTERM/SIGKILL escalation below stops Steam regardless.
+	local shutdown_launcher
+	shutdown_launcher="$(resolve_shutdown_launcher 2>/dev/null || true)"
+	if [ -n "$shutdown_launcher" ]; then
+		if command -v timeout >/dev/null 2>&1; then
+			timeout -k 5 20 "$shutdown_launcher" -shutdown >/dev/null 2>&1 || true
+		else
+			"$shutdown_launcher" -shutdown >/dev/null 2>&1 || true
+		fi
+	fi
+
+	local i
+	for i in 1 2 3 4 5 6 7 8; do
+		if ! pgrep -x steam >/dev/null 2>&1 \
+		   && ! pgrep -f 'steamwebhelper' >/dev/null 2>&1; then
+			log_success "$(L "Steam stopped" "Steam parada")"
+			return 0
+		fi
+		sleep 1
+	done
+
+	# Escalate to SIGTERM.
+	pkill -TERM -x steam 2>/dev/null || true
+	pkill -TERM -f 'steamwebhelper' 2>/dev/null || true
+	pkill -TERM -f '/steam$|/steam ' 2>/dev/null || true
+	sleep 2
+
+	# Last resort: SIGKILL.
+	if pgrep -x steam >/dev/null 2>&1 \
+	   || pgrep -f 'steamwebhelper' >/dev/null 2>&1 \
+	   || pgrep -f '/steam$|/steam ' >/dev/null 2>&1; then
+		log_warn "$(L "Steam still running — forcing it to stop" "Steam ainda rodando — forçando o encerramento")"
+		pkill -KILL -x steam 2>/dev/null || true
+		pkill -KILL -f 'steamwebhelper' 2>/dev/null || true
+		pkill -KILL -f '/steam$|/steam ' 2>/dev/null || true
+		sleep 1
+	fi
+
+	log_success "$(L "Steam stopped" "Steam parada")"
+}
+
+# Stop a running Lumen sidecar. Lumen loads its Lua modules once at boot and
+# keeps them cached for the life of the process, and it only exits on its own
+# ~45s after Steam's CEF endpoint disappears. So after stopping Steam we must
+# kill any lingering Lumen: otherwise the freshly installed code never loads
+# (the old process keeps the old modules in memory) and its single-instance
+# guard would stop the next launch from starting a fresh sidecar.
+stop_lumen() {
+	local lumen_bin="$HOME/.local/share/Lumen/lumen"
+
+	if ! pgrep -f "$lumen_bin" >/dev/null 2>&1; then
+		log_success "$(L "No running Lumen process detected" "Nenhum processo do Lumen em execução")"
+		return 0
+	fi
+
+	log_info "$(L "Stopping running Lumen" "Parando o Lumen em execução")"
+	pkill -TERM -f "$lumen_bin" 2>/dev/null || true
+
+	local i
+	for i in 1 2 3 4 5; do
+		if ! pgrep -f "$lumen_bin" >/dev/null 2>&1; then
+			log_success "$(L "Lumen stopped" "Lumen parado")"
+			return 0
+		fi
+		sleep 1
+	done
+
+	# Last resort: SIGKILL.
+	pkill -KILL -f "$lumen_bin" 2>/dev/null || true
+	sleep 1
+	log_success "$(L "Lumen stopped" "Lumen parado")"
+}
+
+cleanup_previous_install() {
+	local steam_root="$HOME/.steam/steam"
+
+	# --- Old Millennium plugin directories --------------------------------
+	# The previous port and this plugin both install under a dir named
+	# "luatools" (the old "LuaToolsLinux" name is also possible). We only
+	# remove the OLD port here — detected by its Python backend
+	# (backend/main.py / a .venv). Our own plugin (Lua backend, has
+	# backend/platform.lua) is left in place so install_plugin can update it
+	# while preserving the user's settings. The "LuaToolsLinux" name is
+	# always the old port, so it's removed unconditionally.
+	local roots=(
+		"$HOME/.local/share/millennium/plugins"
+		"$HOME/.millennium/plugins"
+		"$HOME/.steam/steam/millennium/plugins"
+		"$HOME/.steam/steam/steamui/millennium/plugins"
+		"$HOME/.local/share/Steam/millennium/plugins"
+	)
+	local root name p
+	for root in "${roots[@]}"; do
+		for name in luatools LuaToolsLinux; do
+			p="$root/$name"
+			[ -d "$p" ] || continue
+			# Keep our own Lua-backend plugin (updated later in place).
+			if [ "$name" = "luatools" ] \
+			   && [ ! -f "$p/backend/main.py" ] && [ ! -d "$p/.venv" ] \
+			   && [ -f "$p/backend/platform.lua" ]; then
+				continue
+			fi
+			log_step "$(L "Removing old plugin: $p" "Removendo plugin antigo: $p")"
+			rm -rf "$p" 2>/dev/null || true
+		done
+	done
+
+	# --- Old luatools data/config dirs ------------------------------------
+	local d
+	for d in "$HOME/.local/share/luatools" "$HOME/.config/luatools" "$HOME/.luatools"; do
+		if [ -e "$d" ]; then
+			log_step "$(L "Removing old data dir: $d" "Removendo dir de dados antigo: $d")"
+			rm -rf "$d" 2>/dev/null || true
+		fi
+	done
+
+	# --- headcrab: hijacked internal steam.sh + client.sh -----------------
+	# The old port replaces Steam's own ~/.steam/steam/steam.sh with a tiny
+	# wrapper that sources client.sh and injects SLSsteam via LD_AUDIT. When
+	# we remove client.sh that wrapper sources a missing file and Steam dies
+	# silently on launch. The genuine Valve steam.sh is a large script that
+	# always references bootstrap.tar.xz; the hijacked one does not. Detect a
+	# foreign steam.sh and restore the real one (Steam also re-extracts it
+	# from bootstrap.tar.xz when it's absent, so deletion is the safe
+	# fallback).
+	restore_steam_sh "$steam_root"
+
+	if [ -f "$steam_root/client.sh" ]; then
+		log_step "$(L "Removing leftover client.sh" "Removendo client.sh residual")"
+		rm -f "$steam_root/client.sh" 2>/dev/null || true
+	fi
+
+	# --- headcrab: steam.cfg that inhibits the bootstrapper ---------------
+	if [ -f "$steam_root/steam.cfg" ] && grep -qi "BootStrapperInhibitAll" "$steam_root/steam.cfg" 2>/dev/null; then
+		log_step "$(L "Removing update-blocking steam.cfg" "Removendo steam.cfg que bloqueia updates")"
+		rm -f "$steam_root/steam.cfg" 2>/dev/null || true
+	fi
+
+	# --- headcrab support files -------------------------------------------
+	# NOTE: ~/.local/share/CloudRedirect is intentionally PRESERVED. We now
+	# manage CloudRedirect ourselves (see install_cloudredirect) to provide
+	# Steam Cloud saves for unowned games; it does not conflict with our stack
+	# the way the steam.sh hijack / client.sh / BootStrapperInhibitAll do
+	# (those are still removed above). Only the headcrab desktop entry/icon and
+	# ~/.headcrab are cleaned up here.
+	for d in "$HOME/.headcrab"; do
+		if [ -e "$d" ]; then
+			log_step "$(L "Removing $d" "Removendo $d")"
+			rm -rf "$d" 2>/dev/null || true
+		fi
+	done
+	rm -f "$HOME/.local/share/applications/headcrab.desktop" 2>/dev/null || true
+	rm -f "$HOME/.local/share/icons/hicolor/48x48/apps/headcrab.png" 2>/dev/null || true
+
+	# --- Old enter-the-wired SLSsteam install -----------------------------
+	# Our slsteam-moon setup.sh reinstalls a fresh copy; this only removes
+	# the binaries/wrapper, not the user's config at ~/.config/SLSsteam.
+	if [ -d "$HOME/.local/share/SLSsteam" ]; then
+		log_step "$(L "Removing old SLSsteam install (~/.local/share/SLSsteam)" \
+		             "Removendo instalação antiga do SLSsteam (~/.local/share/SLSsteam)")"
+		# setup.sh owns the desktop backup lifecycle. Preserve only that directory
+		# while replacing old binaries/wrapper; no .desktop is read or changed here.
+		find "$HOME/.local/share/SLSsteam" -mindepth 1 -maxdepth 1 \
+			! -name backup ! -name system-launcher-backup -exec rm -rf -- {} + 2>/dev/null || true
+	fi
+
+	# --- Arch: system slssteam package conflicts with the local install ---
+	if ! is_immutable_distro && [ "$(get_distro_family)" = "arch" ] && command -v pacman >/dev/null 2>&1; then
+		local pkgs
+		pkgs="$(pacman -Qq 2>/dev/null | grep -E '^slssteam(-git)?$' || true)"
+		if [ -n "$pkgs" ]; then
+			ensure_sudo
+			local sudo_cmd; sudo_cmd="$(sudo_prefix)"
+			log_step "$(L "Removing conflicting system package(s): $pkgs" \
+			             "Removendo pacote(s) de sistema conflitante(s): $pkgs")"
+			# shellcheck disable=SC2086
+			$sudo_cmd pacman -Rns --noconfirm $pkgs >/dev/null 2>&1 || \
+				log_warn "$(L "Could not remove $pkgs; remove it manually if install fails." \
+				             "Não foi possível remover $pkgs; remova manualmente se a instalação falhar.")"
+		fi
+	fi
+
+	# --- Millennium framework ---------------------------------------------
+	# Lumen replaces Millennium. Crucially, Millennium forces the Steam
+	# webhelper onto --remote-debugging-pipe, which keeps the CEF port 8080
+	# CLOSED — and Lumen attaches via that port. So a pre-existing Millennium
+	# install would BLOCK Lumen. Remove the whole framework here (not just the
+	# old plugin dir handled above) so 8080 is free for Lumen.
+	# Keep it as user's request if arguement --keep-millennium is passed. 
+	if [ "${OPT_KEEP_MILLENNIUM:-0}" != 1 ]; then
+		remove_millennium_framework
+	fi
+	
+
+	log_success "$(L "Previous installation cleaned up" "Instalação anterior limpa")"
+}
+
+# Remove an officially-installed Millennium framework (steambrew.app). Mirrors
+# uninstall.sh::uninstall_millennium. Millennium and Lumen are mutually
+# exclusive over Steam's single CEF DevTools endpoint, so Lumen requires
+# Millennium to be gone.
+remove_millennium_framework() {
+	local sudo_cmd; sudo_cmd="$(sudo_prefix)"
+	local xdg_config="${XDG_CONFIG_HOME:-$HOME/.config}/millennium"
+	local xdg_data="${XDG_DATA_HOME:-$HOME/.local/share}/millennium"
+	local steam_root="$HOME/.steam/steam"
+
+	# Anything to do? (user dirs or system dirs present, or injected symlinks)
+	if [ ! -d "$xdg_config" ] && [ ! -d "$xdg_data" ] \
+	   && [ ! -d /usr/lib/millennium ] && [ ! -d /usr/share/millennium ] \
+	   && [ ! -L "$steam_root/ubuntu12_64/libmillennium_hhx64.so" ]; then
+		return 0
+	fi
+
+	log_step "$(L "Removing existing Millennium (replaced by Lumen)" \
+	             "Removendo Millennium existente (substituído pelo Lumen)")"
+
+	# Symlinks Millennium drops into Steam's runtime dirs (point at its libs).
+	local link target
+	for link in \
+		"$steam_root/ubuntu12_32/libXtst.so.6" \
+		"$steam_root/ubuntu12_64/libXtst.so.6" \
+		"$steam_root/ubuntu12_64/libmillennium_hhx64.so"; do
+		if [ -L "$link" ]; then
+			target="$(readlink "$link" 2>/dev/null || true)"
+			case "$target" in
+				*/millennium/*|*libmillennium*)
+					rm -f "$link" 2>/dev/null || true ;;
+			esac
+		fi
+	done
+
+	# User-side dirs (themes, plugins, config.json).
+	rm -rf "$xdg_config" "$xdg_data" 2>/dev/null || true
+
+	# Millennium also drops a dir inside Steam's own install (themes, etc.).
+	rm -rf "$steam_root/millennium" 2>/dev/null || true
+
+	# System-side dirs (Millennium's loader). Needs sudo.
+	if [ -d /usr/lib/millennium ] || [ -d /usr/share/millennium ]; then
+		if [ -n "$sudo_cmd" ] || [ "$(id -u)" -eq 0 ]; then
+			[ -n "$sudo_cmd" ] && ensure_sudo
+			$sudo_cmd rm -rf /usr/lib/millennium /usr/share/millennium 2>/dev/null || true
+		else
+			log_warn "$(L "sudo unavailable; remove /usr/lib/millennium manually so Lumen can attach" \
+			             "sudo indisponível; remova /usr/lib/millennium manualmente para o Lumen funcionar")"
+		fi
+	fi
+
+	log_success "$(L "Millennium removed (Steam re-extracts libXtst.so.6 on next launch)" \
+	             "Millennium removido (a Steam reextrai libXtst.so.6 no próximo início)")"
+}
+
+# ============================================================================
+# Release helpers (GitHub + Codeberg fallback)
+# ============================================================================
+# Fetch a JSON API URL, tolerating a slow / flaky forge (GitHub can have busy
+# spells). Retries transient failures (timeouts, 5xx, refused connections) with
+# a short backoff. Echoes the validated JSON body and returns 0 on success;
+# returns non-zero ONLY when the endpoint is genuinely unreachable / returns
+# junk — i.e. a connectivity problem, NOT "the release has no such asset". This
+# lets callers tell a network error apart from a missing asset.
+api_get() {
+	local url="$1" body
+	body="$(curl -fsSL \
+	             --connect-timeout 15 --max-time 60 \
+	             --retry 3 --retry-delay 2 --retry-connrefused \
+	             -H 'Accept: application/json' "$url" 2>/dev/null)" || return 1
+	# A reachable forge always returns non-empty, valid JSON. Anything else
+	# (empty body, HTML error/placeholder page) means the fetch didn't really
+	# succeed — treat it as a connectivity failure, not a missing asset.
+	[ -n "$body" ] || return 1
+	printf '%s' "$body" | jq -e . >/dev/null 2>&1 || return 1
+	printf '%s' "$body"
+}
+
+# Echo the browser_download_url of the first asset whose name matches the glob
+# $2 in the latest release of repo $1. Optional $3 selects the forge:
+# "github" (default) or "codeberg". Both expose the same release JSON shape
+# (.tag_name, .assets[].browser_download_url), so the same jq query works.
+# Returns: 0 + the URL on stdout (empty if the release carries no matching
+# asset); 2 if the forge could not be reached (network / forge down).
+latest_release_asset_url() {
+	local repo="$1" asset_glob="$2" forge="${3:-github}" api meta
+	case "$forge" in
+		codeberg) api="https://codeberg.org/api/v1/repos/${repo}/releases/latest" ;;
+		*)        api="https://api.github.com/repos/${repo}/releases/latest" ;;
+	esac
+	meta="$(api_get "$api")" || return 2
+	printf '%s' "$meta" | jq -r --arg glob "$asset_glob" \
+		'.assets[] | select(.name | test($glob)) | .browser_download_url' 2>/dev/null | head -n1
+}
+
+# Like latest_release_asset_url but scans ALL releases (newest first) for the
+# first asset matching the glob. Needed when the latest release does not carry
+# the asset we want — e.g. CloudRedirect's most recent tag ships no flatpak, so
+# the newest flatpak lives in an older release under a versioned filename.
+# Same return convention as latest_release_asset_url (2 = forge unreachable).
+any_release_asset_url() {
+	local repo="$1" asset_glob="$2" forge="${3:-github}" api meta
+	case "$forge" in
+		codeberg) api="https://codeberg.org/api/v1/repos/${repo}/releases?limit=50" ;;
+		*)        api="https://api.github.com/repos/${repo}/releases?per_page=50" ;;
+	esac
+	meta="$(api_get "$api")" || return 2
+	printf '%s' "$meta" | jq -r --arg glob "$asset_glob" \
+		'[.[].assets[]? | select(.name | test($glob)) | .browser_download_url][0] // empty' \
+		2>/dev/null | head -n1
+}
+
+# Echo a compact JSON object {tag, asset_at, size, id} describing the release
+# asset matching glob $2, for the Lumen About tab's update check. The
+# fingerprint is the asset's id + UPLOAD time + size — so re-uploading the asset
+# under the SAME tag (the common workflow: edit the v2.6 asset, no new tag) is
+# still detected as an update, and the unique asset id is shown installed-vs-new
+# so the change is legible even when the tag and date are unchanged. $3 selects
+# "latest" (default) or "any" (scan releases, newest first). Always echoes valid
+# JSON ("{}" on failure); best-effort, never fails install.
+release_asset_info() {
+	local repo="$1" glob="$2" mode="${3:-latest}" api meta
+	if [ "$mode" = "any" ]; then
+		api="https://api.github.com/repos/${repo}/releases?per_page=50"
+		meta="$(api_get "$api")" || { printf '{}'; return 0; }
+		printf '%s' "$meta" | jq -c --arg glob "$glob" \
+			'[ .[] as $r | $r.assets[]? | select(.name | test($glob))
+			   | {tag:$r.tag_name, asset_at:.created_at, size:.size, id:.id} ][0] // {}' \
+			2>/dev/null || printf '{}'
+	else
+		api="https://api.github.com/repos/${repo}/releases/latest"
+		meta="$(api_get "$api")" || { printf '{}'; return 0; }
+		printf '%s' "$meta" | jq -c --arg glob "$glob" \
+			'.tag_name as $t | [ .assets[]? | select(.name | test($glob))
+			   | {tag:$t, asset_at:.created_at, size:.size, id:.id} ][0] // {}' \
+			2>/dev/null || printf '{}'
+	fi
+}
+
+# Resolve a matching GitHub release asset and its fingerprint in ONE request.
+# This avoids stamping metadata from a replacement upload while downloading the
+# URL of the asset it replaced. Returns 2 only when GitHub could not be read.
+github_release_asset_info() {
+	local repo="$1" glob="$2" mode="${3:-latest}" api meta
+	if [ "$mode" = "any" ]; then
+		api="https://api.github.com/repos/${repo}/releases?per_page=50"
+		meta="$(api_get "$api")" || return 2
+		printf '%s' "$meta" | jq -c --arg glob "$glob" '
+			[ .[] | select(.draft != true and .prerelease != true) as $r
+			  | $r.assets[]? | select(.name | test($glob))
+			  | {tag:$r.tag_name, asset_at:.created_at, updated_at:.updated_at,
+			     size:.size, id:.id, name:.name, url:.browser_download_url} ][0] // {}' \
+			2>/dev/null || printf '{}'
+	else
+		api="https://api.github.com/repos/${repo}/releases/latest"
+		meta="$(api_get "$api")" || return 2
+		printf '%s' "$meta" | jq -c --arg glob "$glob" '
+			.tag_name as $tag | [ .assets[]? | select(.name | test($glob))
+			  | {tag:$tag, asset_at:.created_at, updated_at:.updated_at,
+			     size:.size, id:.id, name:.name, url:.browser_download_url} ][0] // {}' \
+			2>/dev/null || printf '{}'
+	fi
+}
+
+# Resolve one component from the jsDelivr mirror. The URL and digest are both
+# constrained so a malformed manifest cannot turn the installer into a generic
+# downloader. Returns 2 when the manifest itself is unavailable.
+mirror_release_asset_info() {
+	local key="$1" meta
+	meta="$(api_get "$RELEASE_MIRROR_MANIFEST")" || return 2
+	printf '%s' "$meta" | jq -c --arg key "$key" '
+		if .schema == 1 then (.components[$key] // {}) else {} end
+		| if ((.url // "") | startswith("https://cdn.jsdelivr.net/gh/swwayps/jsdelivr@"))
+		     and ((.sha256 // "") | test("^[0-9a-f]{64}$"))
+		  then . else {} end' 2>/dev/null || printf '{}'
+}
+
+# Read a component's Beta package metadata directly from its beta branch. Beta
+# builds deliberately live in dist/ rather than GitHub Releases, so a branch
+# can be published or withdrawn independently of Stable. A missing branch or
+# package is not fatal: callers fall back to Stable for that component only.
+beta_asset_info() {
+	local repo="$1" path="$2" api meta info
+	api="https://api.github.com/repos/${repo}/contents/${path}?ref=beta"
+	meta="$(api_get "$api")" || return 1
+	info="$(printf '%s' "$meta" | jq -c '
+		if (.sha | type) == "string" and .sha != "" and
+		   (.download_url | type) == "string" and .download_url != "" then
+			{tag:"beta", channel:"beta", id:.sha,
+			 size:(.size // null), download_url:.download_url}
+		else empty end' 2>/dev/null)" || return 1
+	[ -n "$info" ] || return 1
+	printf '%s' "$info"
+}
+
+# Resolve one component according to its requested channel. Results are placed
+# in RESOLVED_ASSET_URL / RESOLVED_ASSET_INFO so callers retain normal logging
+# on stdout. Stable resolution supports both the latest release and the first
+# matching asset across releases (used by slsteam-moon). Return 2 means the
+# Stable forge was unreachable; return 3 means no Stable asset exists.
+resolve_component_asset() {
+	local channel="$1" repo="$2" beta_path="$3" stable_glob="$4"
+	local stable_mode="${5:-latest}" mirror_key="${6:-}"
+	local beta_info="" github_info="{}" mirror_info="{}" url=""
+	local github_rc=0 mirror_rc=0
+	RESOLVED_ASSET_URL=""
+	RESOLVED_ASSET_INFO="{}"
+	RESOLVED_FALLBACK_URL=""
+	RESOLVED_FALLBACK_INFO="{}"
+
+	if [ "$channel" = "beta" ]; then
+		beta_info="$(beta_asset_info "$repo" "$beta_path")" || beta_info=""
+		if [ -n "$beta_info" ]; then
+			url="$(printf '%s' "$beta_info" | jq -r '.download_url // empty' 2>/dev/null)"
+			if [ -n "$url" ]; then
+				RESOLVED_ASSET_URL="$url"
+				RESOLVED_ASSET_INFO="$(printf '%s' "$beta_info" | jq -c 'del(.download_url)')"
+				return 0
+			fi
+		fi
+		log_warn "$(L "Beta is unavailable for ${repo}; falling back to Stable." \
+		                 "O Beta não está disponível para ${repo}; usando Stable.")"
+	fi
+
+	github_info="$(github_release_asset_info "$repo" "$stable_glob" "$stable_mode")" \
+		|| github_rc=$?
+	if [ -n "$mirror_key" ]; then
+		mirror_info="$(mirror_release_asset_info "$mirror_key")" || mirror_rc=$?
+	fi
+
+	url="$(printf '%s' "$github_info" | jq -r '.url // empty' 2>/dev/null)"
+	if [ -n "$url" ]; then
+		RESOLVED_ASSET_URL="$url"
+		RESOLVED_ASSET_INFO="$(printf '%s' "$github_info" |
+			jq -c 'del(.url) + {channel:"stable", source:"github"}' 2>/dev/null)"
+		RESOLVED_FALLBACK_URL="$(printf '%s' "$mirror_info" |
+			jq -r '.url // empty' 2>/dev/null)"
+		if [ -n "$RESOLVED_FALLBACK_URL" ]; then
+			RESOLVED_FALLBACK_INFO="$(printf '%s' "$mirror_info" |
+				jq -c 'del(.url, .sha256_url) + {channel:"stable", source:"jsdelivr"}' 2>/dev/null)"
+		fi
+		return 0
+	fi
+
+	url="$(printf '%s' "$mirror_info" | jq -r '.url // empty' 2>/dev/null)"
+	if [ -n "$url" ]; then
+		RESOLVED_ASSET_URL="$url"
+		RESOLVED_ASSET_INFO="$(printf '%s' "$mirror_info" |
+			jq -c 'del(.url, .sha256_url) + {channel:"stable", source:"jsdelivr"}' 2>/dev/null)"
+		return 0
+	fi
+
+	[ "$github_rc" -eq 2 ] && [ "$mirror_rc" -eq 2 ] && return 2
+	return 3
+}
+
+# Record the installed release fingerprints so the Lumen About tab can show
+# installed-vs-latest. The plugin's bundled version string is unreliable, and a
+# tag alone misses asset-only re-uploads, so we stamp {tag, asset_at, size} per
+# component. Best-effort: never fails the install.
+write_versions_stamp() {
+	local f="$LUMEN_DIR/versions.json"
+	mkdir -p "$LUMEN_DIR" 2>/dev/null || true
+	if [ "${OPT_NOPLUGIN:-0}" = 1 ]; then
+		# --noplugin: stamp only the runtime components so the About tab doesn't
+		# surface a phantom plugin entry.
+		jq -n \
+			--argjson sls "${SLS_INFO:-{\}}" \
+			--argjson lumen "${LUMEN_INFO:-{\}}" \
+			'{slsteam_moon:$sls, lumen:$lumen}' >"$f" 2>/dev/null || true
+		return
+	fi
+	jq -n \
+		--argjson sls "${SLS_INFO:-{\}}" \
+		--argjson lumen "${LUMEN_INFO:-{\}}" \
+		--argjson plugin "${PLUGIN_INFO:-{\}}" \
+		'{slsteam_moon:$sls, lumen:$lumen, plugin:$plugin}' >"$f" 2>/dev/null || true
+}
+
+# Shared message for when the release host (GitHub) can't be reached — slow,
+# flaky, or temporarily down. Distinct from "asset not found" so the user knows
+# it's a connectivity issue to retry, not a broken install.
+forge_unreachable_msg() {
+	L "Couldn't reach GitHub or its jsDelivr mirror to fetch the download. Check your connection and try again in a few minutes." \
+	  "Não foi possível baixar pelo GitHub nem pela mirror do jsDelivr. Verifique sua conexão e tente de novo em alguns minutos."
+}
+
+# verify_sha256 <file> <expected>
+# `expected` may be a bare digest or a `sha256sum`-style line ("<digest>  name").
+# An empty or malformed expectation is a FAILURE, never "nothing to check": a
+# truncated sidecar must not silently disable verification.
+verify_sha256() {
+	local file="$1" expected="$2" want actual
+	[ -f "$file" ] || return 1
+	want="$(printf '%s' "$expected" | awk '{print $1}' | tr -d '[:space:]' | tr 'A-F' 'a-f')"
+	case "$want" in
+	[0-9a-f]*) ;;
+	*) return 1 ;;
+	esac
+	[ "${#want}" -eq 64 ] || return 1
+	command -v sha256sum >/dev/null 2>&1 || return 1
+	actual="$(sha256sum "$file" 2>/dev/null | awk '{print $1}')"
+	[ -n "$actual" ] && [ "$actual" = "$want" ]
+}
+
+# archive_entries_safe <archive>
+# Reject an archive before extracting it if any entry would write outside the
+# destination or create a link. `unzip -qo` strips a leading "/" with a warning
+# but happily honours "../", and a symlink entry lets whatever runs next escape
+# the destination.
+archive_entries_safe() {
+	local archive="$1"
+	# unzip is a hard prerequisite (detect_missing_tools requires it), so the
+	# listing path below always works. python3 is NOT a declared prerequisite, so
+	# it cannot be the only implementation: returning success when it is absent
+	# would silently delete the guard on exactly the systems that lack it.
+	if command -v unzip >/dev/null 2>&1; then
+		local names
+		names="$(unzip -Z1 "$archive" 2>/dev/null)" || return 1
+		[ -n "$names" ] || return 1
+		# Absolute path, Windows drive letter, or a ".." path component.
+		if printf '%s\n' "$names" |
+			grep -Eq '(^/|^\\|^[A-Za-z]:|(^|[/\\])\.\.([/\\]|$))'; then
+			return 1
+		fi
+		# Symlink entries: mode bits live in the "external file attributes" field,
+		# which unzip -Z prints in its long listing as a leading "l".
+		if unzip -Z "$archive" 2>/dev/null | grep -Eq '^l'; then
+			return 1
+		fi
+		return 0
+	fi
+	command -v python3 >/dev/null 2>&1 || return 1
+	python3 - "$archive" <<'PY'
+import sys, zipfile
+
+S_IFLNK = 0xA000
+try:
+    with zipfile.ZipFile(sys.argv[1], "r") as zf:
+        for info in zf.infolist():
+            name = info.filename
+            if not name:
+                continue
+            if name.startswith("/") or name.startswith("\\"):
+                sys.exit(1)
+            # A Windows-style drive letter is an absolute path too.
+            if len(name) > 1 and name[1] == ":":
+                sys.exit(1)
+            parts = name.replace("\\", "/").split("/")
+            if ".." in parts:
+                sys.exit(1)
+            if "\x00" in name or "\r" in name or "\n" in name:
+                sys.exit(1)
+            if (info.external_attr >> 16) & 0xF000 == S_IFLNK:
+                sys.exit(1)
+except zipfile.BadZipFile:
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
+# Extract a zip into a destination dir, preferring unzip, falling back to python.
+# Entries are validated first and the destination is left untouched when the
+# archive is rejected.
+extract_zip() {
+	local archive="$1" dest="$2"
+	if ! archive_entries_safe "$archive"; then
+		log_warn "$(L "The downloaded archive contains unsafe entries and was not extracted." \
+		             "O pacote baixado contém entradas inseguras e não foi extraído.")"
+		return 1
+	fi
+	mkdir -p "$dest"
+	if command -v unzip >/dev/null 2>&1; then
+		unzip -qo "$archive" -d "$dest"
+		return $?
+	fi
+	if command -v python3 >/dev/null 2>&1; then
+		python3 - "$archive" "$dest" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "r") as zf:
+    zf.extractall(sys.argv[2])
+PY
+		return $?
+	fi
+	return 1
+}
+
+# download_and_verify <url> <out> [<label>]
+# Fetch a release asset, then verify it against its `<asset>.sha256` sidecar when
+# the release publishes one. A sidecar that is present but does not match is a
+# hard failure. A sidecar that is absent is reported and the install continues,
+# because releases cut before sidecars existed have none.
+#
+# NOTE: a sidecar served from the same release over the same connection does not
+# defend against a compromised publishing account — it detects corruption and a
+# partial mirror/CDN compromise. Detached signatures with a public key embedded
+# here are the actual fix and need a project signing key.
+download_and_verify() {
+	local url="$1" out="$2" label="${3:-download}" expected="${4:-}" quiet_unsigned="${5:-}"
+	curl --proto '=https' --proto-redir '=https' -fL \
+		--connect-timeout 15 --retry 3 --retry-delay 2 "$url" -o "$out" || return 1
+	if [ -n "$expected" ]; then
+		if verify_sha256 "$out" "$expected"; then
+			log_info "$(L "Verified $label" "Verificado: $label")"
+			return 0
+		fi
+		rm -f "$out"
+		log_error "$(L "The downloaded $label does not match the mirror manifest." \
+		                 "O $label baixado não corresponde ao manifesto da mirror.")"
+		return 2
+	fi
+	local sidecar="$out.sha256"
+	if curl --proto '=https' --proto-redir '=https' -fsL \
+		--connect-timeout 10 "$url.sha256" -o "$sidecar" 2>/dev/null; then
+		if verify_sha256 "$out" "$(cat "$sidecar" 2>/dev/null)"; then
+			log_info "$(L "Verified $label" "Verificado: $label")"
+			rm -f "$sidecar"
+			return 0
+		fi
+		rm -f "$sidecar" "$out"
+		# Distinct exit code: the callers turn a non-zero return into "could not
+		# reach GitHub", which would send the user to debug their network after an
+		# integrity failure. 2 means "arrived, did not verify".
+		log_error "$(L "The downloaded $label does not match its published signature." \
+		             "O $label baixado não corresponde à assinatura publicada.")"
+		return 2
+	fi
+	rm -f "$sidecar"
+	# Some artefacts are served as raw repo files that never publish a sidecar
+	# (e.g. CloudRedirect's hook). Callers pass a non-empty 5th argument to keep
+	# that expected, permanent case quiet instead of warning on every run.
+	[ -n "$quiet_unsigned" ] || log_warn "$(L "No published signature for $label; continuing unverified." \
+	             "Sem assinatura publicada para $label; continuando sem verificação.")"
+	return 0
+}
+
+# Download the URL selected by resolve_component_asset. A transport failure may
+# fall back to the already-resolved jsDelivr entry. An integrity failure never
+# does: changing sources must not turn corrupted bytes into a successful install.
+download_resolved_asset() {
+	local out="$1" label="${2:-download}" rc=0 expected=""
+	DOWNLOADED_ASSET_INFO="$RESOLVED_ASSET_INFO"
+	expected="$(printf '%s' "$RESOLVED_ASSET_INFO" | jq -r '.sha256 // empty' 2>/dev/null)"
+	download_and_verify "$RESOLVED_ASSET_URL" "$out" "$label" "$expected" || rc=$?
+	[ "$rc" -eq 0 ] && return 0
+	[ "$rc" -eq 2 ] && return 2
+	[ -n "${RESOLVED_FALLBACK_URL:-}" ] || return "$rc"
+
+	log_warn "$(L "GitHub download failed; trying the jsDelivr mirror." \
+	               "O download pelo GitHub falhou; tentando a mirror do jsDelivr.")"
+	rm -f "$out" "$out.sha256"
+	expected="$(printf '%s' "$RESOLVED_FALLBACK_INFO" |
+		jq -r '.sha256 // empty' 2>/dev/null)"
+	[ -n "$expected" ] || return 1
+	rc=0
+	download_and_verify "$RESOLVED_FALLBACK_URL" "$out" "$label" "$expected" || rc=$?
+	if [ "$rc" -eq 0 ]; then
+		DOWNLOADED_ASSET_INFO="$RESOLVED_FALLBACK_INFO"
+	fi
+	return "$rc"
+}
+
+# ============================================================================
+# Step: slsteam-moon (the release already bundles setup.sh + bin/ + tools/).
+# We just download, extract, and run setup.sh install — which also kills Steam.
+# ============================================================================
+install_slsteam_moon() {
+	local tmp zip extract_root setup setup_path rc
+
+	log_info "$(L "Resolving the latest slsteam-moon (Lumen) release" \
+	             "Buscando a última release do slsteam-moon (Lumen)")"
+	resolve_component_asset "$OPT_SLS_CHANNEL" "$SLS_REPO" "$SLS_BETA_PATH" \
+		"$SLS_ASSET_GLOB" any slsteam-moon || rc=$?
+	if [ "${rc:-0}" -eq 2 ]; then fail "$(forge_unreachable_msg)"; fi
+	if [ "${rc:-0}" -ne 0 ]; then
+		fail "$(L "Could not find a slsteam-moon (Lumen) release asset." \
+		          "Não foi possível encontrar o asset da release do slsteam-moon (Lumen).")"
+	fi
+	tmp="$(mktemp -d)"; trap 'rm -rf "${tmp:-}"' RETURN
+	zip="$tmp/slsteam-moon.zip"
+
+	log_info "$(L "Downloading slsteam-moon" "Baixando slsteam-moon")"
+	rc=0
+	download_resolved_asset "$zip" "slsteam-moon" || rc=$?
+	[ "$rc" -eq 0 ] || fail "$(forge_unreachable_msg)"
+	SLS_INFO="$DOWNLOADED_ASSET_INFO"
+
+	log_info "$(L "Extracting" "Extraindo")"
+	extract_zip "$zip" "$tmp/extracted" || fail "$(L "Extraction failed" "Falha na extração")"
+
+	# The archive contains a single top-level slsteam-moon-<ver>/ directory.
+	setup="$(find "$tmp/extracted" -maxdepth 2 -name setup.sh -type f | head -n1)"
+	[ -n "$setup" ] || fail "$(L "setup.sh not found in the release archive." \
+	                            "setup.sh não encontrado no pacote da release.")"
+	extract_root="$(dirname "$setup")"
+
+	chmod +x "$setup" 2>/dev/null || true
+	log_info "$(L "Running slsteam-moon setup (this will stop Steam)" \
+	             "Rodando o setup do slsteam-moon (isto vai parar a Steam)")"
+
+	# setup.sh resolves its own paths relative to the extracted dir. Give it a
+	# PATH without an older SLSsteam wrapper: setup recreates that wrapper
+	# before detecting Steam, otherwise a second install can select itself.
+	setup_path="$(path_without_slsteam_wrapper "${PATH:-}")"
+	( cd "$extract_root" && PATH="$setup_path" bash "$setup" install ) \
+		|| fail "$(L "slsteam-moon setup failed" "Falha no setup do slsteam-moon")"
+
+	log_success "$(L "slsteam-moon installed" "slsteam-moon instalado")"
+
+	# Seed the full default config now, while the release tree (with its
+	# res/config.yaml template) is still extracted, so the cloud step can set
+	# DisableCloud authoritatively without writing a partial config.
+	seed_slsteam_config "$extract_root/res/config.yaml"
+}
+
+# ============================================================================
+# Step: Lumen (millennium-less LuaTools bridge)
+# ============================================================================
+# Downloads the lumen release (static binary + lua/) and extracts it to
+# ~/.local/share/Lumen. The Steam wrapper (slsteam-moon setup.sh) launches it
+# as a sidecar; it injects the LuaTools frontend via CDP and hosts the backend.
+install_lumen() {
+	local tmp zip dest rc
+	dest="$LUMEN_DIR"
+	log_info "$(L "Resolving latest Lumen release" "Buscando a última release do Lumen")"
+	resolve_component_asset "$OPT_LUMEN_CHANNEL" "$LUMEN_REPO" "$LUMEN_BETA_PATH" \
+		'^lumen-linux\.zip$' latest lumen || rc=$?
+	if [ "${rc:-0}" -eq 2 ]; then fail "$(forge_unreachable_msg)"; fi
+	if [ "${rc:-0}" -ne 0 ]; then
+		fail "$(L "Could not find the Lumen release asset." \
+		          "Não foi possível encontrar o asset da release do Lumen.")"
+	fi
+	tmp="$(mktemp -d)"; trap 'rm -rf "${tmp:-}"' RETURN
+	zip="$tmp/$LUMEN_ASSET"
+	log_info "$(L "Downloading Lumen" "Baixando o Lumen")"
+	rc=0
+	download_resolved_asset "$zip" "Lumen" || rc=$?
+	[ "$rc" -eq 0 ] || fail "$(forge_unreachable_msg)"
+	LUMEN_INFO="$DOWNLOADED_ASSET_INFO"
+	mkdir -p "$dest"
+	extract_zip "$zip" "$dest" || fail "$(L "Extraction failed" "Falha na extração")"
+	chmod +x "$dest/lumen" 2>/dev/null || true
+	# ELF64 magic: bytes 0-3 = 7f 45 4c 46, byte 4 (EI_CLASS) = 02. Checked via
+	# `od` (coreutils, always present) instead of `file`, which isn't installed
+	# by default on every distro (NixOS notably ships no `file` by default).
+	if [ "$(od -An -tx1 -N5 "$dest/lumen" 2>/dev/null | tr -d ' \n')" != "7f454c4602" ]; then
+		fail "$(L "Lumen binary is not a valid ELF executable" \
+		         "O binário do Lumen não é um ELF válido")"
+	fi
+
+	# NixOS has no FHS /lib64/ld-linux..., /usr/lib etc., so this prebuilt ELF
+	# can't load its dynamic linker directly. Move it aside and drop a
+	# steam-run shim in its place: every caller (the slsteam-moon wrapper
+	# execs "$dest/lumen" by convention) keeps working unmodified, now inside
+	# an FHS sandbox. steam-run ships automatically with programs.steam.enable.
+	if [ "$(get_distro_id)" = "nixos" ]; then
+		command -v steam-run >/dev/null 2>&1 || fail "$(L \
+			"steam-run not found. It ships automatically with programs.steam.enable on NixOS — make sure Steam is enabled and re-run this installer." \
+			"steam-run não encontrado. Ele vem automaticamente com programs.steam.enable no NixOS — confira se a Steam está habilitada e rode o instalador de novo.")"
+		mv -f "$dest/lumen" "$dest/lumen.bin"
+		printf '%s\n' \
+			'#!/usr/bin/env bash' \
+			'exec steam-run "$(dirname "$0")/lumen.bin" "$@"' \
+			> "$dest/lumen"
+		chmod +x "$dest/lumen"
+		log_info "$(L "Wrapped Lumen with steam-run for NixOS" \
+		             "Lumen encapsulado com steam-run para o NixOS")"
+	fi
+
+	log_success "$(L "Lumen installed" "Lumen instalado")"
+}
+
+# ============================================================================
+# Step: LuaTools plugin (this repo)
+# ============================================================================
+# --noplugin: the LuaTools plugin must not be present. If a previous (standard)
+# install left it on disk, remove it so Lumen runs in settings-menu-only mode;
+# if it was never installed, there's nothing to do and we just continue. The
+# plugin lives entirely under ~/.local/share/Lumen/luatools, so removing that
+# directory takes its backend, frontend and stored data with it.
+remove_plugin_if_present() {
+	local dest="$LUMEN_DIR/luatools"
+	if [ -d "$dest" ]; then
+		log_step "$(L "Removing the existing LuaTools plugin (--noplugin)" \
+		             "Removendo o plugin LuaTools existente (--noplugin)")"
+		rm -rf "$dest" 2>/dev/null || true
+		if [ -d "$dest" ]; then
+			log_warn "$(L "Could not fully remove the plugin at $dest" \
+			             "Não foi possível remover totalmente o plugin em $dest")"
+		else
+			log_success "$(L "LuaTools plugin removed" "Plugin LuaTools removido")"
+		fi
+	else
+		log_info "$(L "No LuaTools plugin installed; nothing to remove" \
+		             "Nenhum plugin LuaTools instalado; nada a remover")"
+	fi
+}
+
+preserve_plugin_data() {
+	local dest="$1"
+	local backup="$2"
+
+	mkdir -p "$backup" || return 1
+	if [ -d "$dest/backend/data" ]; then
+		cp -a "$dest/backend/data/." "$backup/" 2>/dev/null || return 1
+	fi
+
+	# Before the persistent catalog existed, user API changes were written
+	# directly to backend/api.json. Migrate that file once, but never replace a
+	# catalog that is already stored under backend/data.
+	if [ ! -f "$backup/api.json" ] && [ -f "$dest/backend/api.json" ]; then
+		cp -a "$dest/backend/api.json" "$backup/api.json" 2>/dev/null || return 1
+	fi
+}
+
+restore_plugin_data() {
+	local dest="$1"
+	local backup="$2"
+
+	mkdir -p "$dest/backend/data" || return 1
+	cp -a "$backup/." "$dest/backend/data/" 2>/dev/null || return 1
+}
+
+activate_plugin_tree() {
+	local dest="$1"
+	local staged="$2"
+	local previous="$3"
+	local had_previous=0
+
+	if [ -e "$dest" ]; then
+		mv "$dest" "$previous" || return 1
+		had_previous=1
+	fi
+
+	if mv "$staged" "$dest"; then
+		[ "$had_previous" -eq 0 ] || rm -rf "$previous"
+		return 0
+	fi
+
+	if [ "$had_previous" -eq 1 ]; then
+		mv "$previous" "$dest" || return 2
+	fi
+	return 1
+}
+
+install_plugin() {
+	local tmp zip dest rc stage previous
+
+	log_info "$(L "Resolving latest LuaTools plugin release" \
+	             "Buscando a última release do plugin LuaTools")"
+	resolve_component_asset "$OPT_PLUGIN_CHANNEL" "$PLUGIN_REPO" "$PLUGIN_BETA_PATH" \
+		'^luatools-linux\.zip$' latest plugin || rc=$?
+	if [ "${rc:-0}" -eq 2 ]; then fail "$(forge_unreachable_msg)"; fi
+	if [ "${rc:-0}" -ne 0 ]; then
+		fail "$(L "Could not find the plugin release asset." \
+		          "Não foi possível encontrar o asset da release do plugin.")"
+	fi
+	tmp="$(mktemp -d)"; trap 'rm -rf "${tmp:-}"' RETURN
+	zip="$tmp/$PLUGIN_ASSET"
+
+	log_info "$(L "Downloading plugin" "Baixando o plugin")"
+	rc=0
+	download_resolved_asset "$zip" "plugin" || rc=$?
+	[ "$rc" -eq 0 ] || fail "$(forge_unreachable_msg)"
+	PLUGIN_INFO="$DOWNLOADED_ASSET_INFO"
+
+	# Lumen hosts the plugin under ~/.local/share/Lumen/luatools (the wrapper
+	# points LUMEN_BACKEND_DIR at .../luatools/backend, and the injector reads
+	# .../luatools/public for the frontend assets).
+	dest="$LUMEN_DIR/luatools"
+
+	# Preserve the user's plugin data across reinstalls/updates. The plugin
+	# stores its settings (language, theme, API keys, custom APIs, ...) and the
+	# donated appid list inside its own backend/data dir, which we are about to
+	# replace. Stash them and restore after extracting the new version. Older
+	# releases stored API changes in backend/api.json, so migrate that legacy
+	# file into the persistent data backup as well.
+	local data_bak=""
+	if [ -d "$dest/backend/data" ] || [ -f "$dest/backend/api.json" ]; then
+		data_bak="$(mktemp -d)"
+		if ! preserve_plugin_data "$dest" "$data_bak"; then
+			rm -rf "$data_bak"
+			fail "$(L "Could not preserve the existing plugin data; update aborted." \
+			          "Não foi possível preservar os dados do plugin; atualização cancelada.")"
+		fi
+	fi
+
+	# Extract and validate the release before touching the working installation.
+	extract_zip "$zip" "$tmp/extracted" || fail "$(L "Extraction failed" "Falha na extração")"
+
+	local inner
+	inner="$(find "$tmp/extracted" -maxdepth 2 -name plugin.json -type f | head -n1)"
+	[ -n "$inner" ] || fail "$(L "plugin.json not found in the plugin archive." \
+	                            "plugin.json não encontrado no pacote do plugin.")"
+
+	# Build a complete staged tree on the destination filesystem. This keeps the
+	# current plugin usable until the archive and preserved data are both ready.
+	mkdir -p "$(dirname "$dest")"
+	stage="$(mktemp -d "${dest}.new.XXXXXX")"
+	cp -a "$(dirname "$inner")/." "$stage/" || {
+		rm -rf "$stage"
+		fail "$(L "Could not stage the plugin files; update aborted." \
+		          "Não foi possível preparar os arquivos do plugin; atualização cancelada.")"
+	}
+
+	if [ -n "$data_bak" ]; then
+		if ! restore_plugin_data "$stage" "$data_bak"; then
+			rm -rf "$stage"
+			fail "$(L "Could not restore the plugin data. Backup kept at $data_bak" \
+			          "Não foi possível restaurar os dados do plugin. Backup mantido em $data_bak")"
+		fi
+	fi
+
+	# Switch trees with rollback. Both paths are siblings, so each mv is a
+	# same-filesystem rename instead of a partial cross-device copy.
+	previous="$stage.previous"
+	log_info "$(L "Installing plugin to $dest" "Instalando o plugin em $dest")"
+	rc=0
+	activate_plugin_tree "$dest" "$stage" "$previous" || rc=$?
+	if [ "$rc" -eq 2 ]; then
+		fail "$(L "Plugin activation and rollback failed; previous tree kept at $previous" \
+		          "A ativação e a reversão falharam; versão anterior mantida em $previous")"
+	elif [ "$rc" -ne 0 ]; then
+		rm -rf "$stage"
+		fail "$(L "Could not activate the staged plugin; previous installation restored." \
+		          "Não foi possível ativar o plugin preparado; instalação anterior restaurada.")"
+	fi
+
+	if [ -n "$data_bak" ]; then
+		rm -rf "$data_bak"
+		log_success "$(L "Plugin updated (settings preserved)" \
+		             "Plugin atualizado (configurações preservadas)")"
+	else
+		log_success "$(L "Plugin installed" "Plugin instalado")"
+	fi
+}
+
+# ============================================================================
+# Step: Game Mode (gamescope session) — OPT-IN, no-op off gamescope
+# ============================================================================
+# On Deck/handheld images, "Game Mode" launches Steam through a gamescope
+# session wrapper instead of the .desktop we patch for Desktop Mode, so our
+# LD_AUDIT + Lumen never run there. The session sources a user-writable
+# sessions.d/<client> file LAST and honours a $STEAMCMD override, so we drop a
+# tiny snippet that re-points the launcher at the slsteam-moon wrapper while
+# PRESERVING the distro's own client flags (-gamepadui -steamos3 ...).
+#
+# This is invasive (it changes how the whole Game-Mode session starts Steam),
+# so it is strictly OPT-IN and a complete NO-OP on:
+#   * any host without a gamescope session (every normal desktop distro), and
+#   * gamescope hosts where the user declines or runs non-interactively.
+# Desktop Mode installs are entirely unaffected — this step returns before it
+# touches anything when there is no gamescope session.
+GAMEMODE_HOOK_SENTINEL="# managed-by: slsteammoon (game-mode launcher hook)"
+
+# Echo the body of the sessions.d/<client> override. Kept as its own function so
+# the command-rewrite logic can be unit-tested (scripts/test-gamemode-hook.sh)
+# without driving the full installer. $HOME / $CLIENTCMD are intentionally left
+# UNEXPANDED here so they resolve when the gamescope session sources the file
+# (CLIENTCMD is set by the system sessions.d/steam, sourced before this user
+# override).
+#
+# The rewrite is TOKEN-based, not "first word + rest": a session may put its own
+# wrapper in FRONT of Steam. Bazzite's "ogui-steam" client, for example, ends up
+# with CLIENTCMD="opengamepadui --overlay-mode -- steam -gamepadui ..." on
+# handheld hardware. Splitting on the first space there would hand Steam's flags
+# to OpenGamepadUI and lose Steam entirely. So we swap ONLY the first bare
+# `steam` token and leave every other token byte-identical.
+#
+# Two safety rails, both aimed at the same failure mode — a Game Mode session
+# that can no longer start Steam is very hard to escape from (no desktop, no
+# terminal):
+#   * we do nothing unless the wrapper is actually present and executable, so an
+#     orphaned hook (payload removed, hook left behind) cannot brick Game Mode;
+#   * we do nothing when the client command contains no steam token at all, so a
+#     non-Steam gamescope client (kodi, retroarch, ...) is never hijacked.
+gamemode_hook_content() {
+	cat <<EOF
+$GAMEMODE_HOOK_SENTINEL
+# Re-point the Game Mode launcher at the slsteam-moon wrapper, preserving the
+# distro's own client flags and any wrapper it placed in front of Steam. Sourced
+# after the system config, so CLIENTCMD is already set. This file is sourced
+# under 'set -a', hence the explicit unsets at the end.
+# Remove this file (or run the uninstaller) to revert.
+_lt_wrapper="\$HOME/.local/share/SLSsteam/path/steam"
+if [ -x "\$_lt_wrapper" ]; then
+	_lt_cmd=""
+	_lt_hit=0
+	set -f   # the word split below must not glob
+	for _lt_tok in \${STEAMCMD:-\${CLIENTCMD:-}}; do
+		if [ "\$_lt_hit" = 0 ] && [ "\${_lt_tok##*/}" = steam ]; then
+			_lt_tok="\$_lt_wrapper"
+			_lt_hit=1
+		fi
+		_lt_cmd="\${_lt_cmd:+\$_lt_cmd }\$_lt_tok"
+	done
+	set +f
+	if [ "\$_lt_hit" = 1 ]; then
+		export STEAMCMD="\$_lt_cmd"
+	elif [ -z "\${STEAMCMD:-}\${CLIENTCMD:-}" ]; then
+		export STEAMCMD="\$_lt_wrapper"
+	fi
+	unset _lt_cmd _lt_hit _lt_tok
+fi
+unset _lt_wrapper
+EOF
+}
+
+# Echo the body of the SteamOS steam-launcher.service drop-in. SteamOS Game Mode
+# runs steam-launcher.service -> $STEAMOS_STEAM_LAUNCHER -> `exec steam ...`
+# (steam resolved via PATH), so we PREPEND the slsteam-moon wrapper dir to PATH
+# and re-exec the distro launcher unchanged: the wrapper resolves the real Steam
+# (skipping itself), injects LD_AUDIT + Lumen, and the launcher keeps its own
+# flags/devkit branch + ExecStartPre. The empty ExecStart= first resets the
+# unit's command list (required before adding our replacement). %h is left for
+# systemd to expand to the user's home; $$ escapes a literal $ so the runtime
+# PATH is preserved by the shell, not by systemd. Kept as its own function so it
+# is unit-testable (scripts/test-gamemode-steamos.sh).
+steamos_gamemode_dropin_content() {
+	cat <<EOF
+[Service]
+$GAMEMODE_HOOK_SENTINEL
+ExecStart=
+ExecStart=/bin/sh -c 'PATH="%h/.local/share/SLSsteam/path:\$\$PATH" exec $STEAMOS_STEAM_LAUNCHER'
+EOF
+}
+
+install_gamemode_hook() {
+	# Hard gate: do nothing unless this host actually has a gamescope session.
+	has_gamescope_session || return 0
+
+	print_section "$(L "Game Mode (gamescope) support" "Suporte ao Game Mode (gamescope)")"
+
+	log_info "$(L "Game Mode (gamescope) session detected on this system." \
+	             "Sessão Game Mode (gamescope) detectada neste sistema.")"
+
+	# Opt-in. Default NO; non-interactive (curl|bash with no tty) => NO. On a
+	# Deck this was answered up front (preask_prompts) while Steam was still up.
+	#
+	# Exception: when a hook of ours is ALREADY installed the user opted in on
+	# this machine before, so we refresh it instead of asking again. That matters
+	# because a distro upgrade can rename the session client out from under an
+	# existing hook (Bazzite 44 -> "ogui-steam"), and the repair has to be
+	# reachable by simply re-running the installer.
+	if gamemode_hook_present; then
+		log_step "$(L "Game Mode support already enabled here; refreshing the launcher hook." \
+		             "Suporte ao Game Mode já ativado aqui; atualizando o hook do launcher.")"
+	elif ! resolve_yesno PREASK_GAMEMODE "$Q_GAMEMODE_EN" "$Q_GAMEMODE_PT" "n"; then
+		log_step "$(L "Skipping Game Mode setup. You can re-run the installer to enable it later." \
+		             "Pulando a configuração do Game Mode. Rode o instalador de novo para ativar depois.")"
+		return 0
+	fi
+
+	# Two launch mechanisms:
+	#   - ChimeraOS/Bazzite: gamescope-session(-plus)/sessions.d/steam override.
+	#   - SteamOS: steam-launcher.service (systemd user) -> `exec steam` via PATH.
+	# Prefer the sessions.d layout when present; else use the SteamOS drop-in.
+	local base; base="$(gamescope_session_base)"
+	if [ -z "$base" ] && has_steamos_gamescope; then
+		install_steamos_gamemode_dropin
+		return 0
+	fi
+	# has_gamescope_session may have matched via the on-PATH binary only;
+	# fall back to the canonical current name for the config dir.
+	[ -n "$base" ] || base="gamescope-session-plus"
+	install_sessionsd_gamemode_hook "$base"
+}
+
+# ChimeraOS/Bazzite: drop a user sessions.d/<client> override that re-points the
+# Game Mode launcher (CLIENTCMD/STEAMCMD) at the slsteam-moon wrapper. Written
+# for EVERY installed Steam-ish client (see gamescope_session_clients) because
+# only the client the session was instantiated with gets sourced.
+install_sessionsd_gamemode_hook() {
+	local base="$1"
+	local dir="${XDG_CONFIG_HOME:-$HOME/.config}/$base/sessions.d"
+	local client hook bak wrote=0
+
+	mkdir -p "$dir" || {
+		log_warn "$(L "Could not create $dir; skipping Game Mode setup." \
+		             "Não foi possível criar $dir; pulando a configuração do Game Mode.")"
+		return 0
+	}
+
+	for client in $(gamescope_session_clients "$base"); do
+		hook="$dir/$client"
+
+		# Preserve a pre-existing FOREIGN file (not ours) before overwriting.
+		if [ -f "$hook" ] && ! grep -qF "$GAMEMODE_HOOK_SENTINEL" "$hook" 2>/dev/null; then
+			bak="$hook.bak.$(date +%s)"
+			log_step "$(L "Backing up existing $hook -> $bak" \
+			             "Fazendo backup de $hook -> $bak")"
+			mv -- "$hook" "$bak" 2>/dev/null || true
+		fi
+
+		if gamemode_hook_content > "$hook" 2>/dev/null; then
+			wrote=1
+			log_step "$(L "Game Mode hook: $hook" "Hook do Game Mode: $hook")"
+		else
+			log_warn "$(L "Could not write $hook" "Não foi possível escrever $hook")"
+		fi
+	done
+
+	if [ "$wrote" = 1 ]; then
+		log_success "$(L "Game Mode enabled (session config: $dir)" \
+		             "Game Mode ativado (config da sessão: $dir)")"
+	fi
+}
+
+# SteamOS: drop a systemd user drop-in for steam-launcher.service that prepends
+# the slsteam-moon wrapper dir to PATH (see steamos_gamemode_dropin_content).
+install_steamos_gamemode_dropin() {
+	local unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/steam-launcher.service.d"
+	local conf="$unit_dir/slsteammoon.conf"
+
+	mkdir -p "$unit_dir" || {
+		log_warn "$(L "Could not create $unit_dir; skipping Game Mode setup." \
+		             "Não foi possível criar $unit_dir; pulando a configuração do Game Mode.")"
+		return 0
+	}
+
+	steamos_gamemode_dropin_content > "$conf"
+
+	# Pick up the drop-in without a full re-login when a user manager is live.
+	systemctl --user daemon-reload >/dev/null 2>&1 || true
+
+	log_success "$(L "Game Mode enabled (SteamOS drop-in: $conf)" \
+	             "Game Mode ativado (drop-in SteamOS: $conf)")"
+}
+
+# ============================================================================
+# Step: CloudRedirect (optional) — Steam Cloud saves for unowned games
+# ============================================================================
+# CloudRedirect (https://github.com/Selectively11/CloudRedirect) redirects
+# Steam Cloud reads/writes for unowned (lua) games to the user's own cloud
+# provider. Two pieces:
+#   1. cloud_redirect.so — the 32-bit hook loaded into Steam. We always install
+#      our PATCHED build from the cloudredirect-moon repo (upstream CloudRedirect
+#      with the steamclient.so wait extended to 120s, CAS save-path healing, and
+#      worker-thread crash containment). The Steam wrapper injects it via
+#      LD_PRELOAD when present (NOT LD_AUDIT — 2.1.x corrupts the client heap if
+#      loaded as an auditor).
+#   2. Provider sign-in — done in Lumen Settings → Cloud Saves. The Lumen
+#      backend runs the OAuth flow and writes the hook's ~/.config/CloudRedirect
+#      config + token file directly, so the main line needs no flatpak login
+#      app. (The flatpak helpers below are kept for the millennium fallback
+#      branch, which has no Lumen menu to host the tab.)
+#
+# We also flip SLSsteam's DisableCloud to "no" so the cloud RPCs reach
+# CloudRedirect instead of being suppressed for AddedApps.
+
+# Track, for the final notice, whether the flatpak login app got installed
+# (millennium branch only; always 0 on the main line).
+CR_FLATPAK_INSTALLED=0
+
+# Records the identity of the published hook that produced $CR_SO_PATH, so a
+# re-run can tell "already current" from "an update is available" without
+# re-downloading 2 MB. Holds the ETag raw.githubusercontent.com serves for
+# cloud_redirect.so (content-derived, so it changes exactly when the hook does).
+CR_SO_STAMP="$CR_DIR/.cloud_redirect.etag"
+CR_CLI_STAMP="$CR_DIR/.cloud_redirect_cli.etag"
+
+# True when the CloudRedirect hook is already deployed on this machine.
+cloudredirect_installed() {
+	[ -s "$CR_SO_PATH" ]
+}
+
+# ETag of the published hook, or empty when it can't be determined (offline,
+# proxy that strips the header, ...). HEAD only — no payload is transferred.
+cr_published_stamp() {
+	local url="$1"
+	curl -fsSLI "$url" 2>/dev/null |
+		tr -d '\r' |
+		awk 'tolower($1) == "etag:" { sub(/^[^:]*:[[:space:]]*/, ""); stamp = $0 } END { print stamp }'
+}
+
+# 0 when the deployed hook is known to match the published one. Unknown stays
+# "not current" so the update path runs and settles it by content comparison.
+cr_hook_is_current() {
+	local published_so stored_so published_cli stored_cli
+	cloudredirect_installed || return 1
+	[ -x "$CR_CLI_PATH" ] || return 1
+	[ -s "$CR_SO_STAMP" ] || return 1
+	[ -s "$CR_CLI_STAMP" ] || return 1
+	published_so="$(cr_published_stamp "$CR_SO_URL")"
+	published_cli="$(cr_published_stamp "$CR_CLI_URL")"
+	[ -n "$published_so" ] && [ -n "$published_cli" ] || return 1
+	stored_so="$(cat "$CR_SO_STAMP" 2>/dev/null)"
+	stored_cli="$(cat "$CR_CLI_STAMP" 2>/dev/null)"
+	[ "$published_so" = "$stored_so" ] && [ "$published_cli" = "$stored_cli" ]
+}
+
+# Deploy the patched 32-bit cloud_redirect.so from the cloudredirect-moon repo
+# into ~/.local/share/CloudRedirect. No-op (beyond the download) when the
+# published hook is byte-identical to the deployed one.
+install_cloudredirect_so() {
+	local tmp so cli staged_so staged_cli same_so same_cli
+
+	tmp="$(mktemp -d)"; trap 'rm -rf "${tmp:-}"' RETURN
+	so="$tmp/cloud_redirect.so"
+	cli="$tmp/cloud_redirect_cli"
+
+	log_info "$(L "Downloading cloud_redirect.so" "Baixando cloud_redirect.so")"
+	# The .so is LD_PRELOAD'ed into the Steam process, so it is the highest-value
+	# artefact in the pipeline; it must not be the one download that skips the
+	# protocol pinning and the sidecar check.
+	if ! download_and_verify "$CR_SO_URL" "$so" "CloudRedirect" "" quiet; then
+		log_warn "$(L "Download of cloud_redirect.so failed; skipping cloud saves." \
+		             "Falha ao baixar cloud_redirect.so; pulando cloud saves.")"
+		return 1
+	fi
+	log_info "$(L "Downloading cloud_redirect_cli" "Baixando cloud_redirect_cli")"
+	if ! download_and_verify "$CR_CLI_URL" "$cli" "CloudRedirect CLI" "" quiet; then
+		log_warn "$(L "Download of cloud_redirect_cli failed; skipping cloud saves." \
+		             "Falha ao baixar cloud_redirect_cli; pulando cloud saves.")"
+		return 1
+	fi
+
+	# The Steam client is 32-bit, so the hook must be a 32-bit ELF or it will be
+	# silently ignored by the loader. Verify before deploying. ELF32 magic:
+	# bytes 0-3 = 7f 45 4c 46, byte 4 (EI_CLASS) = 01. Checked via `od`
+	# (coreutils, always present) instead of `file`, which isn't installed by
+	# default on every distro (NixOS notably ships no `file` by default).
+	if [ "$(od -An -tx1 -N5 "$so" 2>/dev/null | tr -d ' \n')" != "7f454c4601" ]; then
+		log_warn "$(L "Downloaded cloud_redirect.so is not 32-bit; skipping cloud saves." \
+		             "cloud_redirect.so baixado não é 32-bit; pulando cloud saves.")"
+		return 1
+	fi
+	if [ "$(od -An -tx1 -N5 "$cli" 2>/dev/null | tr -d ' \n')" != "7f454c4601" ]; then
+		log_warn "$(L "Downloaded cloud_redirect_cli is not 32-bit; skipping cloud saves." \
+		             "cloud_redirect_cli baixado não é 32-bit; pulando cloud saves.")"
+		return 1
+	fi
+
+	mkdir -p "$CR_DIR"
+
+	# Nothing changed: leave the deployed file alone and just record the stamp,
+	# so the next run can skip the download entirely.
+	same_so=0; same_cli=0
+	cmp -s "$so" "$CR_SO_PATH" && same_so=1
+	cmp -s "$cli" "$CR_CLI_PATH" && same_cli=1
+	if [ "$same_so" -eq 1 ] && [ "$same_cli" -eq 1 ]; then
+		cr_write_so_stamp
+		log_info "$(L "cloud_redirect.so is already up to date" \
+		             "cloud_redirect.so já está atualizado")"
+		return 0
+	fi
+
+	# Replace by rename so the new hook lands on a fresh inode. Writing over the
+	# existing file in place would corrupt it for any Steam process that still
+	# has it mapped.
+	staged_so="$CR_DIR/.cloud_redirect.so.new"
+	staged_cli="$CR_DIR/.cloud_redirect_cli.new"
+	if ! cp -f "$so" "$staged_so" 2>/dev/null \
+	   || ! cp -f "$cli" "$staged_cli" 2>/dev/null; then
+		log_warn "$(L "Could not stage cloud_redirect.so; skipping cloud saves." \
+		             "Não foi possível preparar o cloud_redirect.so; pulando cloud saves.")"
+		return 1
+	fi
+	chmod 755 "$staged_so" "$staged_cli" 2>/dev/null
+	if ! mv -f "$staged_so" "$CR_SO_PATH" 2>/dev/null \
+	   || ! mv -f "$staged_cli" "$CR_CLI_PATH" 2>/dev/null; then
+		rm -f "$staged_so" "$staged_cli" 2>/dev/null
+		log_warn "$(L "Could not install cloud_redirect.so; skipping cloud saves." \
+		             "Não foi possível instalar o cloud_redirect.so; pulando cloud saves.")"
+		return 1
+	fi
+
+	cr_write_so_stamp
+	log_success "$(L "CloudRedirect hook and CLI installed to $CR_DIR" \
+	             "Hook e CLI do CloudRedirect instalados em $CR_DIR")"
+	return 0
+}
+
+# Persist the published hook's identity next to the deployed .so. Best-effort:
+# a missing stamp only costs a re-download on the next run.
+cr_write_so_stamp() {
+	local published_so published_cli
+	published_so="$(cr_published_stamp "$CR_SO_URL")"
+	published_cli="$(cr_published_stamp "$CR_CLI_URL")"
+	if [ -n "$published_so" ]; then
+		printf '%s\n' "$published_so" > "$CR_SO_STAMP" 2>/dev/null || true
+	else
+		rm -f "$CR_SO_STAMP" 2>/dev/null || true
+	fi
+	if [ -n "$published_cli" ]; then
+		printf '%s\n' "$published_cli" > "$CR_CLI_STAMP" 2>/dev/null || true
+	else
+		rm -f "$CR_CLI_STAMP" 2>/dev/null || true
+	fi
+}
+
+# Ensure SLSsteam's DisableCloud matches whether cloud saves will actually
+# work. With the CloudRedirect hook present, cloud RPCs must flow
+# (DisableCloud: no) so CloudRedirect can intercept them; without it, disable
+# cloud (DisableCloud: yes) so SLSsteam doesn't attempt the ownership-rejected
+# Steam Cloud sync for the added games, which surfaces a "Steam Cloud Error".
+#
+# slsteam-moon writes config.yaml lazily on Steam's first launch (after this
+# installer runs) and never clobbers an existing file. To be authoritative on
+# a fresh install we pre-seed a minimal config with just this key — slsteam-
+# moon's per-key defaults fill in the rest on load.
+set_disable_cloud() {
+	local want="$1"                                # "yes" or "no"
+	local cfg="$HOME/.config/SLSsteam/config.yaml"
+
+	# The config is seeded from slsteam-moon's full template at install time
+	# (seed_slsteam_config); if it somehow isn't there yet, do nothing rather
+	# than write a partial config — a config missing keys makes slsteam-moon
+	# raise a "missing key(s)" popup on every load.
+	[ -f "$cfg" ] || return 0
+
+	# Already the wanted value: nothing to do.
+	if grep -qE "^DisableCloud:[[:space:]]*${want}\b" "$cfg"; then
+		return 0
+	fi
+	if grep -qE "^DisableCloud:" "$cfg"; then
+		sed -i "s/^DisableCloud:.*/DisableCloud: ${want}/" "$cfg"
+	else
+		printf '\nDisableCloud: %s\n' "$want" >> "$cfg"
+	fi
+
+	if [ "$want" = "no" ]; then
+		log_success "$(L "Enabled cloud saves in SLSsteam config (DisableCloud: no)" \
+		             "Cloud saves ativado na config do SLSsteam (DisableCloud: no)")"
+	else
+		log_success "$(L "Disabled Steam Cloud for added games in SLSsteam config (DisableCloud: yes)" \
+		             "Steam Cloud desativado para os jogos adicionados na config do SLSsteam (DisableCloud: yes)")"
+	fi
+	return 0
+}
+
+# Seed SLSsteam's config from the shipped full template ($1) so it exists with
+# ALL keys before Steam's first launch. slsteam-moon would otherwise create it
+# lazily on first launch; pre-seeding lets the installer set DisableCloud
+# authoritatively (set_disable_cloud) without ever writing a partial config —
+# a config missing keys makes slsteam-moon raise a "missing key(s)" popup on
+# every load. Never clobbers an existing config.
+seed_slsteam_config() {
+	local src="$1"
+	local cfg="$HOME/.config/SLSsteam/config.yaml"
+
+	[ -f "$cfg" ] && return 0
+	[ -f "$src" ] || return 0
+	mkdir -p "$(dirname "$cfg")" 2>/dev/null || return 0
+	cp -f "$src" "$cfg" 2>/dev/null || return 0
+	log_info "$(L "Seeded default SLSsteam config" \
+	             "Config padrão do SLSsteam criada")"
+	return 0
+}
+
+# Point DisableCloud at the real state of the hook on disk — the same condition
+# the Steam wrapper (slsteam-moon setup.sh) uses to decide whether to
+# LD_PRELOAD cloud_redirect.so. Called on the cloud-save opt-out / hook-missing
+# paths so the config reflects what will actually load.
+sync_cloud_config_with_hook() {
+	if [ -f "$CR_SO_PATH" ]; then
+		set_disable_cloud no
+	else
+		set_disable_cloud yes
+	fi
+}
+
+# Repair the CAS-corrupt save layout left by older CloudRedirect builds
+# (<= 2.0.4). Those builds wrote a save's bytes into a directory named after the
+# file ("<file>/<sha40>") instead of the file itself. Steam then sees a
+# directory where it expects a save and reports "Steam Cloud Error / Unable to
+# sync", and the game can't read the save. Convert each such directory back into
+# the regular file. Scans the CloudRedirect local storage and the Proton
+# compatdata prefixes. Idempotent and conservative: only acts on a directory
+# whose name looks like a save and that holds exactly one 40-hex-named file.
+repair_cas_save_layout() {
+	local roots=(
+		"$HOME/.config/CloudRedirect/storage"
+		"$HOME/.steam/steam/steamapps/compatdata"
+		"$HOME/.steam/debian-installation/steamapps/compatdata"
+	)
+	local repaired=0 root dir base leaf tmp
+	for root in "${roots[@]}"; do
+		[ -d "$root" ] || continue
+		while IFS= read -r -d '' dir; do
+			base="$(basename "$dir")"
+			case "$base" in
+				*.es3|*.jpg|*.sav|*.save|*.dat|*.bin|*.json|*.xml) ;;
+				*) continue ;;
+			esac
+			# Must hold exactly one regular file...
+			local files=()
+			while IFS= read -r -d '' f; do files+=("$f"); done \
+				< <(find "$dir" -maxdepth 1 -type f -print0 2>/dev/null)
+			[ "${#files[@]}" -eq 1 ] || continue
+			leaf="$(basename "${files[0]}")"
+			# ...named like a 40-char SHA-1 (the CAS leaf).
+			case "$leaf" in
+				*[!0-9a-f]*) continue ;;
+			esac
+			[ "${#leaf}" -eq 40 ] || continue
+
+			tmp="$(mktemp "$(dirname "$dir")/.casrepair.XXXXXX")" || continue
+			if cp -p "${files[0]}" "$tmp" && rm -rf "$dir" && mv "$tmp" "$dir"; then
+				repaired=$((repaired+1))
+			else
+				rm -f "$tmp" 2>/dev/null
+			fi
+		done < <(find "$root" -type d -print0 2>/dev/null)
+	done
+	if [ "$repaired" -gt 0 ]; then
+		log_success "$(L "Repaired $repaired cloud-save file(s) from a legacy storage layout" \
+		             "Reparado(s) $repaired arquivo(s) de cloud-save de um layout de armazenamento antigo")"
+	fi
+}
+
+# Run flatpak with the real terminal attached to stdin.
+#
+# flatpak's interactive progress bar probes the terminal for the cursor
+# position (it writes the ANSI "\e[6n" query and reads the terminal's reply
+# back from stdin). When this installer is run as `curl ... | bash`, the
+# script's stdin is the pipe — not the terminal — so those replies have nowhere
+# to go: they leak onto the tty as stray "^[[24;69R" sequences and corrupt the
+# next shell prompt (a "syntax error near unexpected token `;'" at the end).
+#
+# Reconnecting stdin to the controlling terminal (/dev/tty) lets the terminal
+# answer flatpak's probes directly, so the progress bar stays fully visible and
+# nothing leaks. If there is no controlling terminal (truly non-interactive,
+# e.g. CI), fall back to a plain invocation.
+flatpak_tty() {
+	if [ -e /dev/tty ] && { : >/dev/tty; } 2>/dev/null; then
+		flatpak "$@" </dev/tty
+	else
+		flatpak "$@"
+	fi
+}
+
+# Install the flatpak companion app from the release bundle. Only called when
+# flatpak is present. Best-effort: failure just means the user finishes setup
+# manually (the .so is already in place).
+install_cloudredirect_flatpak() {
+	local url tmp bundle
+
+	# Already installed? Nothing to do.
+	if flatpak list 2>/dev/null | grep -q "$CR_FLATPAK_APP_ID"; then
+		log_success "$(L "CloudRedirect app already installed" "App CloudRedirect já instalado")"
+		CR_FLATPAK_INSTALLED=1
+		return 0
+	fi
+
+	log_info "$(L "Resolving CloudRedirect companion app (flatpak)" \
+	             "Buscando o app companheiro do CloudRedirect (flatpak)")"
+	# The newest CloudRedirect tag may ship no flatpak (e.g. 2.1.7), and recent
+	# ones name it cloudredirect-<ver>.flatpak rather than cloudredirect.flatpak.
+	# Scan all releases for the first matching bundle, excluding .sha256 sidecars.
+	url="$(any_release_asset_url "$CR_REPO" "^cloudredirect.*\\.flatpak$" github)"
+	if [ -z "$url" ]; then
+		log_warn "$(L "Could not find the CloudRedirect flatpak bundle; skipping the login app." \
+		             "Não foi possível encontrar o bundle flatpak do CloudRedirect; pulando o app de login.")"
+		return 1
+	fi
+
+	tmp="$(mktemp -d)"; trap 'rm -rf "${tmp:-}"' RETURN
+	bundle="$tmp/$(basename "$url")"
+
+	log_info "$(L "Downloading CloudRedirect app" "Baixando o app CloudRedirect")"
+	if ! download_and_verify "$url" "$bundle" "CloudRedirect app"; then
+		log_warn "$(L "Download of the CloudRedirect app failed; you can install it later." \
+		             "Falha ao baixar o app CloudRedirect; você pode instalá-lo depois.")"
+		return 1
+	fi
+
+	# The bundle needs the KDE runtime. It is not bundled, so make sure flathub
+	# is available as a user remote and pull the runtime first.
+	flatpak remote-add --user --if-not-exists flathub \
+		https://flathub.org/repo/flathub.flatpakrepo >/dev/null 2>&1 || true
+
+	# Let flatpak print its own download/install progress (the KDE runtime is
+	# ~400 MB) instead of hiding it — otherwise the installer looks frozen for
+	# minutes. stderr carries the progress bar; keep it on the terminal.
+	# flatpak_tty hands flatpak the real terminal on stdin so its progress bar's
+	# cursor-position probes are answered by the terminal, not leaked as stray
+	# escape sequences (see flatpak_tty).
+	log_info "$(L "Installing KDE runtime (required by the app, ~400 MB)" \
+	             "Instalando o runtime KDE (exigido pelo app, ~400 MB)")"
+	flatpak_tty install --user -y flathub "$CR_KDE_RUNTIME" || true
+
+	log_info "$(L "Installing the CloudRedirect app" "Instalando o app CloudRedirect")"
+	if flatpak_tty install --user -y --bundle "$bundle"; then
+		log_success "$(L "CloudRedirect app installed" "App CloudRedirect instalado")"
+		CR_FLATPAK_INSTALLED=1
+		return 0
+	fi
+
+	log_warn "$(L "Could not install the CloudRedirect app automatically; you can install it later." \
+	             "Não foi possível instalar o app CloudRedirect automaticamente; você pode instalá-lo depois.")"
+	return 1
+}
+
+# Ensure a default CloudRedirect config.json exists so the hook starts in a
+# well-defined local-only state until the user signs in from Lumen Settings →
+# Cloud Saves. Never clobbers an existing config the hook/user already wrote.
+ensure_cloudredirect_config() {
+	local cfg="$HOME/.config/CloudRedirect/config.json"
+	[ -f "$cfg" ] && return 0
+	mkdir -p "$(dirname "$cfg")" 2>/dev/null || return 0
+	printf '{"provider":"local"}\n' > "$cfg" 2>/dev/null || return 0
+	return 0
+}
+
+install_cloudredirect() {
+	# Already installed → the user answered this question on a previous run, so
+	# don't ask again. Keep the hook current instead: update it silently when the
+	# published build differs from the deployed one, and do nothing when it
+	# doesn't.
+	if cloudredirect_installed; then
+		if cr_hook_is_current; then
+			log_info "$(L "CloudRedirect is installed and up to date." \
+			             "CloudRedirect está instalado e atualizado.")"
+		else
+			log_info "$(L "CloudRedirect is installed; checking for an update." \
+			             "CloudRedirect está instalado; verificando atualização.")"
+			if install_cloudredirect_so; then
+				# Only worth scanning for the legacy CAS layout after the hook
+				# changed; the find over compatdata is slow on big libraries.
+				repair_cas_save_layout
+			fi
+		fi
+		# Cheap and idempotent, and needed for the hook to actually receive the
+		# cloud RPCs — run on both paths.
+		sync_cloud_config_with_hook
+		ensure_cloudredirect_config
+		return 0
+	fi
+
+	# Not installed yet. Cloud saves are optional, so ask first. CloudRedirect
+	# (the .so hook) only matters to people who want Steam Cloud saves to work
+	# for these games; skip the whole step if they say no. Sign-in now lives in
+	# Lumen Settings → Cloud Saves (no flatpak login app on the main line).
+	if ! resolve_yesno PREASK_CLOUD "$Q_CLOUD_EN" "$Q_CLOUD_PT" "n"; then
+		log_info "$(L "Skipping cloud saves (CloudRedirect)." \
+		             "Pulando os cloud saves (CloudRedirect).")"
+		# Match the config to the hook's real state: if no hook is present,
+		# disable Steam Cloud for the added games so they don't trigger a
+		# rejected sync / "Steam Cloud Error". (A hook left over from a
+		# previous run keeps cloud enabled.)
+		sync_cloud_config_with_hook
+		return 0
+	fi
+
+	# The .so is the core piece — always install it (and enable cloud in the
+	# SLSsteam config).
+	if ! install_cloudredirect_so; then
+		# No hook → no cloud saves; align the config with what's on disk.
+		sync_cloud_config_with_hook
+		return 0
+	fi
+
+	set_disable_cloud no
+
+	# Start the hook in a defined local-only state; the user picks a provider
+	# and signs in from Lumen Settings → Cloud Saves.
+	ensure_cloudredirect_config
+
+	# Heal any saves left in the legacy CAS-corrupt directory layout so Steam
+	# stops reporting "Steam Cloud Error" for them.
+	repair_cas_save_layout
+}
+
+# Read the coverage policy persisted by slsteam-moon. Older installs may not
+# have a state file, and malformed values must retain the user-local desktop
+# fallback rather than changing launch behavior unexpectedly.
+installed_coverage_policy() {
+	local policy="${SLSM_COVERAGE_POLICY-}" policy_file policy_state_home
+	if [ -n "$policy" ]; then
+		case "$policy" in
+			launcher|desktop) printf '%s\n' "$policy" ;;
+			*)                printf 'desktop\n' ;;
+		esac
+		return 0
+	fi
+
+	if [ -e "$HOME/.local/share/SLSsteam/coverage-policy.effective" ] || \
+	   [ -L "$HOME/.local/share/SLSsteam/coverage-policy.effective" ]; then
+		printf 'desktop\n'
+		return 0
+	fi
+
+	policy=""
+	case "${XDG_STATE_HOME:-}" in
+		/*) policy_state_home="$XDG_STATE_HOME" ;;
+		*)  policy_state_home="$HOME/.local/state" ;;
+	esac
+	policy_file="$policy_state_home/slsteam-moon/coverage.policy"
+	if cmp -s "$policy_file" <(printf 'launcher\n'); then
+		policy=launcher
+	elif cmp -s "$policy_file" <(printf 'desktop\n'); then
+		policy=desktop
+	fi
+	case "$policy" in
+		launcher|desktop) printf '%s\n' "$policy" ;;
+		*)                printf 'desktop\n' ;;
+	esac
+}
+
+# ============================================================================
+# Completion notice
+# ============================================================================
+print_complete() {
+	echo ""
+	echo -e "${GREEN}${BOLD}"
+	echo "┌─────────────────────────────────────────────────────────┐"
+	echo "│              ✓ Installation Complete!                   │"
+	echo "└─────────────────────────────────────────────────────────┘"
+	echo -e "${NC}"
+	echo ""
+	echo -e "  $(L "Everything is installed:" "Tudo instalado:")"
+	echo -e "    ${GREEN}•${NC} slsteam-moon"
+	echo -e "    ${GREEN}•${NC} Lumen"
+	if [ "$OPT_NOPLUGIN" != 1 ]; then
+		echo -e "    ${GREEN}•${NC} LuaTools ($(L "plugin" "plugin"))"
+	fi
+	if [ -f "$CR_SO_PATH" ]; then
+		echo -e "    ${GREEN}•${NC} CloudRedirect ($(L "cloud saves" "cloud saves"))"
+	fi
+	local coverage_policy
+	coverage_policy="$(installed_coverage_policy)"
+	echo -e "  $(L "Launch coverage policy: ${coverage_policy}" \
+	               "Política de cobertura do launcher: ${coverage_policy}")"
+	echo ""
+
+	# Cloud-save guidance: the .so is installed; the user picks a provider and
+	# signs in from Lumen Settings → Cloud Saves (no separate login app).
+	if [ -f "$CR_SO_PATH" ]; then
+		echo -e "  ${MOON}$(L "Cloud saves:" "Cloud saves:")${NC}"
+		echo -e "    $(L "Open Steam → Lumen Settings → Cloud Saves to pick a provider" \
+		               "Abra a Steam → Configurações do Lumen → Saves na Nuvem para escolher um provedor")"
+		echo -e "    $(L "(Google Drive / OneDrive) and sign in." \
+		               "(Google Drive / OneDrive) e fazer login.")"
+		echo ""
+	fi
+
+	if [ "$OPT_NOPLUGIN" = 1 ]; then
+		echo -e "  $(L "Start Steam to begin using the stack." \
+		               "Inicie a Steam para começar a usar.")"
+	else
+		echo -e "  $(L "Start Steam to begin using LuaTools." \
+		               "Inicie a Steam para começar a usar o LuaTools.")"
+	fi
+	echo -e "  $(L "The first launch can take longer than usual while Steam loads" \
+	               "A primeira abertura pode demorar mais que o normal enquanto a Steam carrega")"
+	echo -e "  $(L "everything. This is normal — just give it a moment." \
+	               "tudo. Isso é normal — é só aguardar um pouco.")"
+	echo ""
+}
+
+# ============================================================================
+# Command-line options
+# ============================================================================
+usage() {
+	cat <<EOF
+$(L "Usage" "Uso"): install.sh [$(L "options" "opções")]
+
+$(L "When run through the one-liner, pass options after '-- ':" \
+   "Ao rodar pelo one-liner, passe as opções após '-- ':")
+  curl -fsSL .../install.sh | bash -s -- --noplugin
+
+$(L "Options" "Opções"):
+  --noplugin   $(L "Install only slsteam-moon + Lumen (skip the LuaTools plugin)." \
+                  "Instala apenas o slsteam-moon + Lumen (pula o plugin LuaTools).")
+  --nolaunch   $(L "Do not auto-start Steam at the end of install." \
+                  "Não inicia a Steam automaticamente ao final da instalação.")
+  --keep-millennium $(L "Do not remove millennium's config/data (Old luatools plugin is still removed)." \
+                  "Não remover os dados/configurações do Millennium (o plugin luatools antigo ainda será removido).")
+  --slsteam-channel stable|beta
+               $(L "Select the slsteam-moon update channel (default: stable)." \
+                  "Seleciona o canal de atualização do slsteam-moon (padrão: stable).")
+  --plugin-channel stable|beta
+               $(L "Select the LuaTools plugin update channel (default: stable)." \
+                  "Seleciona o canal de atualização do plugin LuaTools (padrão: stable).")
+  --lumen-channel stable|beta
+               $(L "Select the Lumen update channel (default: stable)." \
+                  "Seleciona o canal de atualização do Lumen (padrão: stable).")
+  -h, --help   $(L "Show this help and exit." "Mostra esta ajuda e sai.")
+EOF
+}
+
+# should_autolaunch — true when we should open Steam through the wrapper at the
+# end of install. The installer only ever runs in a normal DESKTOP session (a
+# gamescope Game Mode session has no terminal to run `curl | bash`; Game Mode is
+# covered separately by install_gamemode_hook), so there is no Game Mode case to
+# guard here. We only skip when the user opted out or there is no graphical
+# session (e.g. a headless/SSH install). Reads OPT_NOLAUNCH (parse_args) + env,
+# so it is unit-testable.
+should_autolaunch() {
+	[ "${OPT_NOLAUNCH:-0}" = 1 ] && return 1
+	[ -n "${SLS_NO_LAUNCH:-}" ] && return 1
+	[ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] && return 1
+	return 0
+}
+
+# do_autolaunch — open Steam injected through the wrapper, detached + silent, so
+# the first post-install launch is injected and the desktop-coverage re-assert
+# runs. Never blocks: returns immediately. No-op if the wrapper is missing.
+do_autolaunch() {
+	local wrapper="$HOME/.local/share/SLSsteam/path/steam"
+	[ -x "$wrapper" ] || return 0
+	# Start Steam injected, detached. No -silent: a silent first launch doesn't
+	# survive Steam's post-update self-relaunch (the client updates on a fresh
+	# install, then re-launches; -silent broke that relaunch), and a normal
+	# window also makes the first-run client update visible instead of looking
+	# like the installer hung.
+	setsid nohup "$wrapper" >/dev/null 2>&1 < /dev/null &
+}
+
+# Pure option parser: sets install switches and each component's release
+# channel, records the first invalid argument in OPT_BAD_ARG and returns 1.
+# Resets its output vars each call so it's safe to invoke repeatedly.
+parse_args() {
+	OPT_NOPLUGIN=${LUATOOLS_MOON_NOPLUGIN:-0}
+	OPT_NOLAUNCH=${LUATOOLS_MOON_NOLAUNCH:-0}
+	OPT_KEEP_MILLENNIUM=${LUATOOLS_MOON_KEEP_MILLENNIUM:-0}
+	OPT_HELP=${LUATOOLS_MOON_HELP:-0}
+	OPT_SLS_CHANNEL="${LUATOOLS_MOON_SLS_CHANNEL:-stable}"
+	OPT_PLUGIN_CHANNEL="${LUATOOLS_MOON_PLUGIN_CHANNEL:-stable}"
+	OPT_LUMEN_CHANNEL="${LUATOOLS_MOON_LUMEN_CHANNEL:-stable}"
+	OPT_BAD_ARG=""
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--noplugin) OPT_NOPLUGIN=1 ;;
+			--nolaunch) OPT_NOLAUNCH=1 ;;
+			--keep-millennium) OPT_KEEP_MILLENNIUM=1 ;;
+			--slsteam-channel|--plugin-channel|--lumen-channel)
+				local option="$1"
+				if [ "$#" -lt 2 ]; then
+					OPT_BAD_ARG="$option"
+					return 1
+				fi
+				if [ "$2" != "stable" ] && [ "$2" != "beta" ]; then
+					OPT_BAD_ARG="$option $2"
+					return 1
+				fi
+				case "$option" in
+					--slsteam-channel) OPT_SLS_CHANNEL="$2" ;;
+					--plugin-channel)  OPT_PLUGIN_CHANNEL="$2" ;;
+					--lumen-channel)   OPT_LUMEN_CHANNEL="$2" ;;
+				esac
+				shift
+				;;
+			-h|--help)  OPT_HELP=1 ;;
+			*)          OPT_BAD_ARG="$1"; return 1 ;;
+		esac
+		shift
+	done
+	return 0
+}
+
+# ============================================================================
+# Entry point
+# ============================================================================
+main() {
+	detect_language
+
+	if ! parse_args "$@"; then
+		log_error "$(L "Unknown option: $OPT_BAD_ARG" "Opção desconhecida: $OPT_BAD_ARG")"
+		echo ""
+		usage
+		exit 1
+	fi
+	if [ "$OPT_HELP" = 1 ]; then
+		usage
+		exit 0
+	fi
+
+	print_banner
+
+	print_section "$(L "Pre-flight checks" "Verificações iniciais")"
+	check_not_root
+	check_arch
+	# Pure detection first: on NixOS / immutable systems a missing prerequisite
+	# aborts here, before Steam is stopped or a working install is removed.
+	check_dependencies
+	check_internet
+	check_steam_native
+	check_steam_bootstrapped
+
+	# On SteamOS / Bazzite and derivatives the on-screen keyboard needs Steam
+	# running, so ask the optional yes/no questions NOW, before we stop Steam.
+	# No privilege prompt is made on immutable systems.
+	preask_prompts
+	preask_launcher_sudo
+
+	print_section "$(L "Stopping Steam" "Parando a Steam")"
+	stop_steam
+	stop_lumen
+
+	print_section "$(L "Cleaning up previous installation" "Limpando instalação anterior")"
+	cleanup_previous_install
+
+	# Mutable distros only: sudo + package manager, deliberately after the
+	# machine has been validated.
+	print_section "$(L "Dependencies" "Dependências")"
+	install_dependencies
+
+	print_section "$(L "Installing slsteam-moon" "Instalando slsteam-moon")"
+	install_slsteam_moon
+
+	print_section "$(L "Installing Lumen" "Instalando Lumen")"
+	install_lumen
+
+	if [ "$OPT_NOPLUGIN" = 1 ]; then
+		print_section "$(L "LuaTools plugin (skipped)" "Plugin LuaTools (ignorado)")"
+		log_info "$(L "Runtime-only install (--noplugin): slsteam-moon + Lumen." \
+		             "Instalação somente runtime (--noplugin): slsteam-moon + Lumen.")"
+		remove_plugin_if_present
+	else
+		print_section "$(L "Installing LuaTools plugin" "Instalando o plugin LuaTools")"
+		install_plugin
+	fi
+
+	# Record the installed release tags for the Lumen About tab (installed-vs-
+	# latest). Best-effort; never fails the install.
+	write_versions_stamp
+
+	# Game Mode is opt-in and gamescope-only. It prints its own section header
+	# (and prompts) ONLY when a gamescope session exists, so normal desktop
+	# installs see nothing here.
+	install_gamemode_hook
+
+	# CloudRedirect (optional cloud saves) is always offered — the prompt
+	# itself defaults to "no" on Enter — even with --noplugin.
+	print_section "$(L "Setting up cloud saves (CloudRedirect)" "Configurando cloud saves (CloudRedirect)")"
+	install_cloudredirect
+
+	print_complete
+
+	# Open Steam (injected, windowed, detached) so the first post-install launch
+	# is injected and the desktop-coverage re-assert runs. Guarded + opt-out.
+	if should_autolaunch; then
+		do_autolaunch
+	fi
+}
+
+# Run the installer unless sourced for unit tests (SLSPLUGIN_LIB_ONLY=1).
+# Plain `curl ... | bash` leaves SLSPLUGIN_LIB_ONLY unset, so main still runs.
+if [ -z "${SLSPLUGIN_LIB_ONLY:-}" ]; then
+	main "$@"
+fi

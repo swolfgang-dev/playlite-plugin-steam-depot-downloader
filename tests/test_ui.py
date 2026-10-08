@@ -15,6 +15,19 @@ if 'downloader' not in sys.modules:
 from downloader.plugin import Plugin
 
 class UiTests(unittest.TestCase):
+    def test_open_vm_desktop_does_not_create_setup_dialog(self):
+        from unittest.mock import Mock
+        from downloader.download_dialog import DownloadDialog
+        dialog=Mock(busy=False)
+        dialog.network.is_vm=True
+        dialog.network.open_desktop.return_value='Desktop opened'
+        dialog.task.side_effect=lambda operation,done:done(operation())
+        with patch('downloader.steam_runtime_dialog.SteamRuntimeDialog') as wizard:
+            DownloadDialog.open_authentication(dialog,'Steam')
+        dialog.network.open_desktop.assert_called_once()
+        wizard.assert_not_called()
+
+
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

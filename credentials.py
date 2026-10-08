@@ -120,3 +120,8 @@ class SteamSessionWallet(MoonSessionWallet):
 
 class HubcapKeyWallet(MoonSessionWallet):
     entry = 'Hubcap API key'
+
+
+class VMAuthenticationWallet(MoonSessionWallet):
+    """Encrypted credentials for resumable VM provisioning."""
+    entry = "VM setup authentication"

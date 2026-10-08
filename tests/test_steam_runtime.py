@@ -10,6 +10,21 @@ from downloader.steam_runtime import SteamRuntime,RUNTIME_IMAGE
 from downloader.constants import IMAGE,WORKER_LABEL
 
 class RuntimeTests(unittest.TestCase):
+    def test_exited_steam_process_is_not_running(self):
+        path=Path(__file__).resolve().parents[1]/'tools/steam/bridge.py'
+        spec=importlib.util.spec_from_file_location('zombie_bridge',path)
+        bridge=importlib.util.module_from_spec(spec);spec.loader.exec_module(bridge)
+        with tempfile.TemporaryDirectory() as folder:
+            process=Path(folder)/'123';process.mkdir()
+            (process/'comm').write_text('steam')
+            (process/'stat').write_text('123 (steam) Z 1 0')
+            with patch.object(Path,'iterdir',return_value=iter([process])):
+                self.assertFalse(bridge.steam_running())
+            (process/'stat').write_text('123 (steam) S 1 0')
+            with patch.object(Path,'iterdir',return_value=iter([process])):
+                self.assertTrue(bridge.steam_running())
+
+
     def test_bridge_requests_support_long_repository_profile_paths(self):
         import socket,threading
         with tempfile.TemporaryDirectory() as temporary:
@@ -138,7 +153,7 @@ class RuntimeTests(unittest.TestCase):
             bridge.prepare_library();first=library.read_text()
             self.assertIn('"path" "/existing"',first)
             self.assertIn('"123" "456"',first)
-            self.assertEqual(first.count('"path" "/library"'),1)
+            self.assertEqual(first.count('"path" "'+str(bridge.LIBRARY)+'"'),1)
             bridge.prepare_library();self.assertEqual(library.read_text(),first)
 
     def test_completed_default_private_library_install_is_exported(self):

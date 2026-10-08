@@ -17,7 +17,7 @@ class InstalledGamesDialog(QDialog):
         self.network=network;self.runtime=SteamRuntime(network);self.job=None;self.games=[]
         self.setWindowTitle('Installed Steam content — Playlite');self.resize(820,460)
         layout=QVBoxLayout(self)
-        note=QLabel('Manage games and tools in isolated Steam. Uninstalling here keeps the copies exported to your Playlite download folders.')
+        note=QLabel('Manage games and tools in the Steam VM. Uninstalling a game from its default shared library deletes that game’s shared files. Exported copies in other folders are retained.' if getattr(network,'is_vm',False) is True else 'Manage games and tools in isolated Steam. Uninstalling here keeps the copies exported to your Playlite download folders.')
         note.setWordWrap(True);layout.addWidget(note)
         self.table=QTableWidget(0,4);self.table.setHorizontalHeaderLabels(['Name','Size','Status','Steam library'])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -71,7 +71,7 @@ class InstalledGamesDialog(QDialog):
         if self.job or game is None:return
         if game['status']=='Downloading' or queued_app(self.network,game['appid']):
             self.status.setText('Cancel this game’s queued or active download before uninstalling it.');return
-        answer=QMessageBox.question(self,'Uninstall from isolated Steam?',f'Uninstall {game["name"]} from isolated Steam?\n\nIts private Steam files will be removed. Your exported download folder will be kept.',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)
+        answer=QMessageBox.question(self,'Uninstall from isolated Steam?',f'Uninstall {game["name"]} from isolated Steam?\n\nIts Steam installation files will be removed. Copies in other folders will be kept.',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)
         if answer!=QMessageBox.StandardButton.Yes:return
         self.status.setText('Uninstalling '+game['name']+'…')
         def operation():

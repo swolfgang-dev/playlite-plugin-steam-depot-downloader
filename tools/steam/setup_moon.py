@@ -1,20 +1,41 @@
-"""Install upstream user-local Moon, then add a bounded App-ID-only interface."""
+"""Install pinned Moon and attach Playlite's bounded LuaMoon mailbox."""
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 
-result=subprocess.run(['bash','/opt/moon-install.sh','--nolaunch'],stdin=subprocess.DEVNULL)
-if result.returncode:raise SystemExit(result.returncode)
-main=Path(os.environ['HOME'])/'.local/share/Lumen/luatools/backend/main.lua'
-source=main.read_text()
-marker='-- Playlite private control bridge'
-if marker not in source:
-    offset=source.rfind('\nreturn {')
-    if offset<0:raise SystemExit('LuaMoon lifecycle contract changed; private bridge was not installed.')
-    source=source[:offset]+source[offset:].replace('\nreturn {','\nlocal lifecycle = {',1)
-    source+='\n'+marker+'\n'+Path('/opt/moon_bridge.lua').read_text()
-    temporary=main.with_suffix('.playlite-tmp');temporary.write_text(source);temporary.replace(main)
-else:
-    # Upgrade the narrow interface in an existing saved Steam installation.
-    source=source[:source.index(marker)]+marker+'\n'+Path('/opt/moon_bridge.lua').read_text()
-    temporary=main.with_suffix('.playlite-tmp');temporary.write_text(source);temporary.replace(main)
+ASSETS = Path(__file__).resolve().parent
+MARKER = '-- Playlite private control bridge'
+
+
+def install_bridge(home=None, control=None):
+    home = Path(home or os.environ['HOME'])
+    main = home / '.local/share/Lumen/luatools/backend/main.lua'
+    source = main.read_text()
+    if MARKER in source:
+        source = source[:source.index(MARKER)]
+    else:
+        offset = source.rfind('\nreturn {')
+        if offset < 0:
+            raise RuntimeError('LuaMoon lifecycle contract changed; bridge was not installed.')
+        backup = main.with_suffix('.lua.before-playlite')
+        if not backup.exists():
+            shutil.copy2(main, backup)
+        source = source[:offset] + source[offset:].replace('\nreturn {', '\nlocal lifecycle = {', 1)
+    bridge = (ASSETS / 'moon_bridge.lua').read_text()
+    if control is not None:
+        bridge = bridge.replace('/control/', str(Path(control)) + '/')
+    updated = source + '\n' + MARKER + '\n' + bridge
+    if main.read_text() != updated:
+        temporary = main.with_suffix('.playlite-tmp')
+        temporary.write_text(updated)
+        temporary.replace(main)
+
+
+if __name__ == '__main__':
+    if '--bridge-only' not in sys.argv:
+        result = subprocess.run(['bash', str(ASSETS / 'moon-install.sh'), '--nolaunch'], stdin=subprocess.DEVNULL)
+        if result.returncode:
+            raise SystemExit(result.returncode)
+    install_bridge(control=os.environ.get('PLAYLITE_CONTROL'))

@@ -48,6 +48,27 @@ class Transport:
 
     def request(self, url, headers=None, data=None):
         self.network.check()
+        if getattr(self.network, 'is_vm', False) is True:
+            response = self.network.http(url, headers, data)
+        else:
+            response = self._docker_request(url, headers, data)
+        status = response['status']
+        if status != 200:
+            reason = response.get('reason', '')
+            if reason == 'invalid_api_key':
+                raise RuntimeError('LuaTools rejected its public API client key; the provider login configuration needs updating.')
+            if reason == 'browser_challenge':
+                raise RuntimeError('The provider blocked the isolated HTTP worker with a browser challenge.')
+            if reason == 'expired_code':
+                raise RuntimeError('The login code expired or was already used. Generate a fresh Discord /login code.')
+            if reason == 'invalid_code':
+                raise RuntimeError('The provider rejected the login code.')
+            if status in (401, 403):
+                raise RuntimeError('Provider authentication was rejected. Sign in again or check the provider key.')
+            raise RuntimeError(f'Provider request failed (HTTP {status or "connection error"}).')
+        return base64.b64decode(response['body'], validate=True)
+
+    def _docker_request(self, url, headers, data):
         args = self.network.probe_args('')
         name = 'playlite-manifest-' + uuid.uuid4().hex
         args[1:1] = ['--name', name, '-i']
@@ -60,22 +81,7 @@ class Transport:
             result = subprocess.run(['docker', *args], input=payload, capture_output=True, text=True, timeout=45)
             if result.returncode:
                 raise RuntimeError('The isolated HTTP worker failed. Run isolated Steam setup in downloader settings.')
-            response = json.loads(result.stdout)
-            status = response['status']
-            if status != 200:
-                reason = response.get('reason', '')
-                if reason == 'invalid_api_key':
-                    raise RuntimeError('LuaTools rejected its public API client key; the provider login configuration needs updating.')
-                if reason == 'browser_challenge':
-                    raise RuntimeError('The provider blocked the isolated HTTP worker with a browser challenge.')
-                if reason == 'expired_code':
-                    raise RuntimeError('The login code expired or was already used. Generate a fresh Discord /login code.')
-                if reason == 'invalid_code':
-                    raise RuntimeError('The provider rejected the login code.')
-                if status in (401, 403):
-                    raise RuntimeError('Provider authentication was rejected. Sign in again or check the provider key.')
-                raise RuntimeError(f'Provider request failed (HTTP {status or "connection error"}).')
-            return base64.b64decode(response['body'], validate=True)
+            return json.loads(result.stdout)
         finally:
             subprocess.run(['docker', 'rm', '-f', name], capture_output=True, timeout=15)
 

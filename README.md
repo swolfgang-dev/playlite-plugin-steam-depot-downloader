@@ -1,3 +1,105 @@
+## Five-step VM setup
+
+Open **Settings → Steam Downloader → Setup and sign-in…**:
+
+1. **Configure:** select the shared download folder and enter the NordVPN access
+   token. The token is encrypted in KWallet so installation can resume.
+2. **Create VM:** automatically install the desktop and NordVPN, authenticate,
+   connect and verify the VPN.
+3. **Install Steam and LuaTools/Moon:** automatically download the verified Steam
+   bootstrap, update Steam, and install LuaTools/Moon over the VPN.
+4. **Steam sign-in:** choose **Sign into Steam…**. Playlite starts the VM,
+   connects NordVPN and opens a dedicated VM viewer. Sign in directly in the VM
+   and approve Steam Guard if requested. Keep Remember me enabled. Playlite
+   monitors sign-in, closes only its viewer when complete, and advances to step 5.
+   Steam and the VM remain running.
+5. **LuaTools and Hubcap:** enter a fresh LuaTools Discord `/login` code and an
+   optional Hubcap Manifest API key. Leaving the key empty skips Hubcap. Verify,
+   then open Downloader.
+
+Steps 2–3 run without further button presses. The wizard preserves completed
+work and logs progress and errors. Steam account approval remains interactive.
+
+## Authentication before setup
+
+Open **Settings → Steam Downloader → Maintenance → Saved credentials…**. Save a
+NordVPN access token and a LuaTools `/login` code or Hubcap Manifest API key.
+These values are encrypted in KWallet and applied inside the VM during setup.
+LuaTools codes can expire; use a current code when starting installation.
+Steam requires its normal first sign-in and any Steam Guard approval using
+**Open Steam sign-in…** after installation. Its session stays in the VM.
+Playlite never saves your Steam password.
+
+Setup retries transient transport failures three times, retains completed steps,
+and can be resumed with **Continue setup**. Invalid credentials, service outages,
+and required account approvals cannot be guaranteed to resolve unattended.
+
+# Steam Downloader — VM integration
+
+A fresh plugin install opens VM setup. You can reopen it from
+**Settings → Plugins → Steam Downloader → Setup and sign-in…**. Opening
+**Playlite menu → Steam Downloader…** does not start setup; if setup is
+incomplete, it shows a prompt to use settings. New installations use the VM
+backend. The setup wizard chooses the shared game
+folder and creates the VM in the background. For NordVPN, open Nord Account
+in your host browser and paste an access token into Playlite once; the token
+is forwarded to the guest and is not saved in host settings or logs. Guest
+desktop sign-in remains an optional fallback. After sign-in,
+setup continues automatically to bootstrap Steam and install LuaTools/LuaMoon.
+Sign into Steam and LuaTools or configure Hubcap in the VM, then use
+**Check sign-in** if the automatic readiness check needs
+another attempt. When ready, click **Open Downloader**. Completed installation steps and guest
+logins are retained if setup is closed and reopened.
+
+Search for a game, choose Windows/Linux and language, then add it
+to Downloads. Queues, pause/resume, agreements, Steam verification and adding
+the installed game to Playlite use the same VM. LuaTools receives the selected game ID and determines available content with Steam.
+**Connection options → Setup and sign-in…** reopens the wizard; **Open VM desktop**
+opens only the VM window. Saved credentials, stop and delete controls are under
+**Maintenance** in plugin settings.
+**Delete VM…** in settings confirms removal of the owned VM, private disk and
+saved logins while retaining shared game and Workshop files. Deletion is
+blocked while downloads or setup are active.
+
+Steam downloads game content directly into the mounted shared folder, normally
+the default installation folder in Playlite’s General settings. You can change
+it using the editable shared folder and Browse button in plugin settings.
+Changing the shared folder restarts the VM; existing games stay in their
+original folder. There is no export copy or automatic uninstall.
+Playlite records Steam's actual installation path. Workshop content is shared
+at `<shared>/Workshop/<AppID>/<ItemID>/`. Uninstalling a game removes its shared
+files; removing the plugin retains the VM and games.
+
+After setup is verified, the VM, Steam and NordVPN remain active for the whole
+Playlite session. Closing download/settings windows does not disconnect them.
+Before launching a game, Playlite pauses the VM if no downloads or setup jobs
+are active; game detection resumes it when the game stops or launch fails.
+Pausing stops guest execution but retains its RAM. Opening the downloader or
+starting a download can resume it earlier. On normal Playlite exit the guest
+Steam/VPN disconnect, and the VM shuts down normally. Active downloads
+or setup jobs retain the running VM. The next session boots the existing VM disk.
+
+The wizard saves its progress and errors to
+`$XDG_STATE_HOME/playlite/steam-vm-setup.log` (normally
+`~/.local/state/playlite/steam-vm-setup.log`), with **Copy log** and **Open log**
+buttons. Failed VM commands include stderr and service start failures include
+the systemd journal. Repository builds keep their logs and VM profile under
+`.dev/home`, separate from the release profile.
+
+The bundled standalone installer remains available for terminal use:
+`bash ~/Downloads/install-steam-vm.sh --shared /mnt/SSD/Games/Standalone`.
+The default profile is
+`~/.local/share/playlite/plugin-data/SteamDepotDownloader/steam-vm`.
+`PLAYLITE_STEAM_VM_ROOT` selects another owned profile. Control uses QEMU's local
+guest agent and a private guest socket. Guest operations require the mounted
+share and a verified NordVPN connection with its kill switch enabled.
+Host Steam and host VPN credentials are not used.
+
+The former comparison-VM Workshop marker is superseded by the installer profile.
+Legacy Docker code is available only with the explicit
+`PLAYLITE_STEAM_BACKEND=docker` compatibility override; the material below documents that older backend.
+
+
 # Steam Downloader
 
 ## Install and get started

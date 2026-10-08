@@ -48,6 +48,7 @@ for _, target in ipairs(targets) do
     if target.title=='SharedJSContext' then shared=target.webSocketDebuggerUrl;break end
 end
 assert(shared, 'Steam UI is not ready')
+request.library=os.getenv('PLAYLITE_LIBRARY') or '/library'
 local expression = '(async()=>{const r='..json.encode(request)..[[;
 let stage='platform';try{
 if(r.action==='download_progress'){
@@ -111,7 +112,7 @@ stage='DLC';
 for(const dlc of (Array.isArray(r.dlc)?r.dlc:[]))await SteamClient.Apps.SetDLCEnabled(r.appid,dlc.id,dlc.enabled);
 stage='library';
 const folders=await SteamClient.InstallFolder.GetInstallFolders();
-const folder=folders.find(f=>f.strFolderPath==='/library'&&f.bIsMounted);
+const folder=folders.find(f=>f.strFolderPath===(r.library||'/library')&&f.bIsMounted);
 if(!folder)throw Error('The isolated download library is unavailable');
 const installed=folders.some(f=>f.vecApps.some(a=>a.nAppID===r.appid));
 stage='installation';

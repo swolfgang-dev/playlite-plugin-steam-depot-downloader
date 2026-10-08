@@ -31,6 +31,6 @@ class ProviderLimitsTests(unittest.TestCase):
     limit_reason="$(source_limit_reason "${http:-0}" "${C_ZIP[i]}")"
 ''')
             limits.install_capture(backend);first=script.read_text()
-            self.assertIn('python3 /opt/provider_limits.py',first)
+            self.assertIn('python3 '+str(Path(limits.__file__).resolve()),first)
             self.assertIn('retry-after|x-ratelimit-',first)
             limits.install_capture(backend);self.assertEqual(script.read_text(),first)

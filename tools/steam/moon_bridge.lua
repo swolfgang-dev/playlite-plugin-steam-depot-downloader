@@ -38,7 +38,22 @@ lifecycle.on_tick = function(...)
         end
         return cjson.encode(result)
     end
+    local function provider_login()
+        local credential = request.credential
+        if type(credential) ~= 'string' or #credential == 0 or #credential > 2048 then error('Invalid credential') end
+        local value
+        if request.provider == 'luatools' then
+            value = LoginLuaToolsWithCode(credential)
+        elseif request.provider == 'hubcap' then
+            value = ApplySettingsChanges({general = {hubcapApiKey = credential}})
+        else error('Invalid provider') end
+        if type(value) == 'string' then value = cjson.decode(value) end
+        if type(value) ~= 'table' or value.success == false then error('Provider sign-in failed') end
+        -- Settings replies contain credentials: return only readiness.
+        return authentication_status()
+    end
     local methods = {
+        provider_login = provider_login,
         authentication_status = authentication_status,
         add = StartAddViaLuaToolsSmart,
         add_status = GetAddViaLuaToolsStatus,

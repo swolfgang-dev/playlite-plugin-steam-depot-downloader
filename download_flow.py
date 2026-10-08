@@ -20,6 +20,16 @@ def suggested_wine_prefix(directory,root):
     slug=re.sub(r'[^\w]+','-',words.casefold().replace('_','-')).strip('-') or 'game'
     return Path(root).expanduser()/slug
 
+def primary_windows_executable(directory):
+    root=Path(directory).resolve()
+    candidates=[]
+    for path in root.rglob('*.exe'):
+        if path.is_symlink() or not path.is_file():continue
+        if any(part.lower() in ('_commonredist','redist','redistributables','installers') for part in path.relative_to(root).parts):continue
+        if any(word in path.stem.lower() for word in ('uninstall','vcredist','dxsetup','crashhandler','crashreport')):continue
+        candidates.append(path)
+    return str(candidates[0]) if len(candidates)==1 else ''
+
 
 def prepare_destination(path, reuse_staging=False):
     path=Path(path).expanduser().resolve()

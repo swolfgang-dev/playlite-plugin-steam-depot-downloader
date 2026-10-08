@@ -314,3 +314,36 @@ class SteamQueueTests(unittest.TestCase):
                     if cleanup_fails:self.assertIn('cleanup pending',row.status)
                     runner.dispose()
                 window.close()
+
+class VMDirectInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.app=QApplication.instance() or QApplication([])
+
+    def test_completed_vm_install_uses_same_files_and_never_exports_or_uninstalls(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source=Path(folder)/'Steam Folder';source.mkdir();(source/'game.exe').write_bytes(b'verified')
+            window=QWidget();queue=DownloadQueue(window,storage=Path(folder)/'queue.json');queue.pump=Mock()
+            row=queue.enqueue('Store title',str(Path(folder)/'Store title'),Mock());queue.active=row;row.state='Downloading'
+            network=Mock(is_vm=True,container='vm')
+            runtime=Mock(direct_install=True)
+            runtime.installation_path.return_value=source
+            def request(command,*args,**kwargs):
+                if command=='has_game':return {'exists':True}
+                if command=='retail_selection':return {'restart_required':False}
+                if command=='download_status':return {'installed':True,'flags':4,'directory':'steamapps/common/Steam Folder','depots':[11]}
+                return {}
+            runtime.request.side_effect=request
+            snapshot={'app':10,'platform':'windows','language':'english','dlc':[],'info':metadata()}
+            with patch('downloader.steam_queue_runner.SteamRuntime',return_value=runtime),patch('downloader.steam_queue_runner.QThreadPool') as pool,patch('downloader.steam_queue_runner.export_install') as export:
+                pool.globalInstance.return_value.start.side_effect=lambda job:job.run()
+                runner=SteamQueueRunner(network,window,queue,row,snapshot);runner.start()
+                self.assertEqual(row.state,'Complete');self.assertEqual(row.destination,str(source))
+                export.assert_not_called()
+                self.assertNotIn('finish_export',[call.args[0] for call in runtime.request.call_args_list])
+                self.assertNotIn('uninstall',[call.args[0] for call in runtime.request.call_args_list])
+                self.assertEqual((source/'game.exe').read_bytes(),b'verified')
+                self.assertFalse((source/'.playlite-download').exists())
+                import json
+                self.assertEqual(json.loads(queue.storage.read_text())[0]['destination'],str(source))
+                runner.dispose()
+            window.close()

@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 from PyQt6.QtCore import QTimer, Qt, QCoreApplication, QObject, QRunnable, QThreadPool, QSettings, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG, QThread
 from PyQt6.QtWidgets import QWidget, QFormLayout, QLineEdit, QComboBox, QPushButton, QLabel, QHBoxLayout, QGroupBox, QVBoxLayout, QSizePolicy, QDialog, QFileDialog, QCheckBox
 from playlite.providers import GenericPlugin
@@ -42,7 +43,8 @@ class Plugin(GenericPlugin):
         app = QCoreApplication.instance()
         self.network = getattr(app, '_playlite_depot_network', None) if app else None
         if self.network is None:
-            self.network = Network()
+            from .vm_backend import enabled, VMNetwork
+            self.network = Network() if os.environ.get('PLAYLITE_STEAM_BACKEND')=='docker' else VMNetwork()
             if app is not None:
                 app._playlite_depot_network = self.network
         self.busy = False
@@ -53,13 +55,39 @@ class Plugin(GenericPlugin):
 
     def shutdown(self):
         self.network.cancel()
-        if not self.busy:
+        if getattr(self.network,'is_vm',False) is True:
+            try:self.network.close_session_background()
+            except RuntimeError:pass
+            return
+        if not self.busy and not self.jobs:
             try:
                 self.network.disconnect()
             except RuntimeError:
                 pass  # The independent guardian retries cleanup after process exit.
 
     def before_launch(self,window,game):
+        if getattr(self.network,'is_vm',False) is True:
+            if self.busy or self.jobs:return True
+            app=QCoreApplication.instance()
+            if app and hasattr(app,'allWidgets') and any(getattr(widget,'network',None) is self.network and (getattr(widget,'busy',False) or getattr(widget,'jobs',None)) for widget in app.allWidgets()):return True
+            from .vpn_lifecycle import has_downloads
+            if has_downloads(self.network) or not (self.network.profile/'vm.json').exists():return True
+            if self.settings().value('vm_ready_profile','')!=str(self.network.profile):return True
+            if not hasattr(self,'session_games'):
+                self.session_games=set()
+                def changed(identity,state):
+                    if state=='Stopped':
+                        self.session_games.discard(identity)
+                        if not self.session_games:self.network.resume()
+                window.game_detection.changed.connect(changed)
+            self.session_games.add(game['Id'])
+            self.network.suspend()
+            def failed_launch():
+                if window.game_detection.status(game['Id'])=='Stopped':
+                    self.session_games.discard(game['Id'])
+                    if not self.session_games:self.network.resume()
+            QTimer.singleShot(2000,failed_launch)
+            return True
         from .vpn_lifecycle import disconnect_when_idle
         # Active jobs include setup and authentication; they must finish before
         # their shared network namespace can be released.
@@ -72,6 +100,9 @@ class Plugin(GenericPlugin):
             from .download_dialog import DownloadDialog
             existing=next((dialog for dialog in window.findChildren(DownloadDialog) if not getattr(dialog,'queue_runner',False) and not dialog.authentication and dialog.isVisible()),None)
             dialog=existing or DownloadDialog(self.network,window)
+            if existing and getattr(self.network,'is_vm',False) is True and self.settings().value('vm_ready_profile','')==str(self.network.profile):
+                dialog.set_content_enabled(True)
+                QTimer.singleShot(0,lambda:dialog.connect_vpn(automatic=True))
             dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
             dialog.show();dialog.raise_();dialog.activateWindow()
         return [('Steam Downloader…', open_downloader)]
@@ -80,6 +111,18 @@ class Plugin(GenericPlugin):
         from .steam_queue_runner import SteamQueueRunner
         from .vpn_lifecycle import watch_queue
         watch_queue(self.network,queue)
+        if getattr(self.network,'is_vm',False) is True and (self.network.profile/'vm.json').exists() and self.settings().value('vm_ready_profile','')==str(self.network.profile):
+            from .settings import Preferences
+            from .steam_runtime import start_with_vpn
+            def start_session():
+                settings=self.settings()
+                self.network.cancelled.clear()
+                self.network.connect(Preferences(settings.value('country',''),settings.value('protocol','tcp')))
+                start_with_vpn(self.network)
+                return 'Steam VM session ready.'
+            job=Job(start_session);self.jobs.add(job)
+            job.signals.finished.connect(lambda message:self.jobs.discard(job))
+            QThreadPool.globalInstance().start(job)
         for row in queue.entries:
             if row.metadata.get('backend')!='isolated_steam':continue
             snapshot=row.metadata.get('snapshot',{})
@@ -93,10 +136,18 @@ class Plugin(GenericPlugin):
         return QSettings('Playlite', 'SteamDownloader')
 
     def post_install(self,parent=None):
+        from .vm_backend import VMNetwork
+        self.network=VMNetwork()
+        app=QCoreApplication.instance()
+        if app:app._playlite_depot_network=self.network
         from .steam_runtime_dialog import SteamRuntimeDialog
-        SteamRuntimeDialog(self.network,parent).exec()
+        if SteamRuntimeDialog(self.network,parent).exec()==QDialog.DialogCode.Accepted and parent is not None:
+            owner=parent
+            while owner.parentWidget() is not None:owner=owner.parentWidget()
+            self.main_menu_actions(owner)[0][1]()
 
     def prepare_uninstall(self,parent=None):
+        if getattr(self.network,'is_vm',False) is True:return True  # VM and shared games are retained.
         from .environment_uninstall import EnvironmentRemovalDialog
         return EnvironmentRemovalDialog(self.network,parent).exec()==QDialog.DialogCode.Accepted
 
@@ -109,17 +160,18 @@ class Plugin(GenericPlugin):
             owner.finished.connect(lambda *_: self.close_settings(widget))
         page = QVBoxLayout(widget)
         page.setContentsMargins(0, 8, 0, 0)
-        page.setSpacing(16)
+        page.setSpacing(12)
         page.setAlignment(Qt.AlignmentFlag.AlignTop)
-        note = QLabel('Downloads use an isolated VPN and a separate Steam session.')
+        vm=getattr(self.network,'is_vm',False) is True
+        note = QLabel('Set up once, then choose games in Steam Downloader. Downloads go straight to your shared game folder.' if vm else 'Downloads use an isolated VPN and a separate Steam session.')
         note.setWordWrap(True)
         page.addWidget(note)
         def section(title):
             box = QGroupBox()
             layout = QFormLayout(box)
-            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setContentsMargins(16, 12, 16, 12)
             layout.setHorizontalSpacing(16)
-            layout.setVerticalSpacing(12)
+            layout.setVerticalSpacing(10)
             layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
             layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
             heading = QLabel(f'<b>{title}</b>')
@@ -127,12 +179,13 @@ class Plugin(GenericPlugin):
             page.addWidget(box)
             return layout
         form = section('NordVPN')
+        vpn_box=form.parentWidget()
         widget.country = QLineEdit(self.settings().value('country', ''))
         widget.country.setPlaceholderText('Automatic — NordVPN recommended server')
         form.addRow('Server country', widget.country)
         widget.protocol = QComboBox()
         widget.protocol.addItems(['udp', 'tcp'])
-        widget.protocol.setCurrentText(self.settings().value('protocol', 'udp'))
+        widget.protocol.setCurrentText(self.settings().value('protocol', 'tcp' if vm else 'udp'))
         widget.protocol.setFixedWidth(widget.protocol.sizeHint().width())
         form.addRow('OpenVPN protocol', widget.protocol)
         widget.status = QLabel('Connection not checked')
@@ -143,17 +196,21 @@ class Plugin(GenericPlugin):
         controls.setSpacing(10)
         widget.buttons = []
         def save_credentials():
+            if vm:
+                self.network.open_desktop()
+                self.start(widget,lambda progress:self.network.agent.rpc({'command':'open_nord'})['message'])
+                return
             from .authentication_dialog import CredentialDialog
             CredentialDialog('NordVPN', self.network, widget).exec()
         def connect():
             try:
                 preferences = Preferences(widget.country.text().strip(), widget.protocol.currentText()).validate()
-                credentials = Wallet().read()
+                credentials = () if vm else Wallet().read()
             except Exception as error:
                 widget.status.setText(str(error))
                 return
             self.start(widget, lambda progress: self.network.connect(preferences, *credentials, progress=progress), cancellable=True)
-        for text, callback in [('Authenticate', save_credentials), ('Connect', connect),
+        for text, callback in [('Sign in inside VM' if vm else 'Authenticate', save_credentials), ('Connect', connect),
                                ('Check connection', lambda: self.start(widget, lambda progress: self.network.check())),
                                ('Disconnect', lambda: self.stop(widget))]:
             button = QPushButton(text)
@@ -171,21 +228,30 @@ class Plugin(GenericPlugin):
         controls.addStretch()
         form.addRow('Connection', controls)
         form.addRow(widget.status)
-        widget.keep_vpn_open=QCheckBox('Keep VPN connected for the Playlite session')
+        widget.keep_vpn_open=QCheckBox('Keep VM VPN connected while Playlite is open' if vm else 'Keep VPN connected for the Playlite session')
         widget.keep_vpn_open.setChecked(self.settings().value('keep_vpn_open',False,type=bool))
         form.addRow(widget.keep_vpn_open)
-        form = section('Isolated Steam')
+        if vm:
+            widget.keep_vpn_open.setChecked(True);widget.keep_vpn_open.hide()
+            # VM setup and session lifetime own the VPN connection. Keep the
+            # internal preference widgets for settings compatibility only.
+            widget.vpn_preferences_box=vpn_box
+            page.removeWidget(vpn_box)
+            vpn_box.hide()
+        form = section('Steam environment' if vm else 'Isolated Steam')
         widget.keep_steam_open=QCheckBox('Keep Steam open for the Playlite session')
         widget.keep_steam_open.setChecked(self.settings().value('keep_steam_open',False,type=bool))
-        form.addRow(widget.keep_steam_open)
-        lifetime=QLabel('Keeping Steam open also keeps its isolated VPN connected. Both stop when Playlite exits. Disconnect stops both immediately.')
+        if not vm:form.addRow(widget.keep_steam_open)
+        if vm:widget.keep_steam_open.setChecked(True);widget.keep_steam_open.hide()
+        lifetime=QLabel('Starts with Playlite, pauses while you play when no downloads are active, and shuts down when Playlite closes. Your games and sign-ins are kept.' if vm else 'Keeping Steam open also keeps its isolated VPN connected. Both stop when Playlite exits. Disconnect stops both immediately.')
         lifetime.setWordWrap(True);form.addRow(lifetime)
         widget.auto_start=QCheckBox('Connect VPN and start Steam when opening the downloader')
         widget.auto_start.setChecked(self.settings().value('auto_start_downloader',True,type=bool))
-        form.addRow(widget.auto_start)
+        if not vm:form.addRow(widget.auto_start)
+        if vm:widget.auto_start.setChecked(True);widget.auto_start.hide()
         widget.steam_status=QLabel('Steam: checking status…')
         widget.steam_status.setWordWrap(True)
-        widget.steam_status.setMinimumHeight(widget.steam_status.fontMetrics().height()*2+8)
+        widget.steam_status.setMinimumHeight(widget.steam_status.fontMetrics().lineSpacing())
         form.addRow(widget.steam_status)
         widget.steam_busy=False
         widget.steam_checking=False
@@ -194,9 +260,11 @@ class Plugin(GenericPlugin):
         widget.steam_error=''
         widget.steam_action=QPushButton('Set up Steam…')
         widget.steam_setup_button=QPushButton('Open setup…')
-        widget.steam_setup_button.hide()
+        if vm:widget.steam_setup_button.setText('Setup and sign-in…')
+        else:widget.steam_setup_button.hide()
         widget.stop_steam_button=QPushButton('Stop Steam environment')
         widget.delete_steam_button=QPushButton('Delete isolated Steam…')
+        if vm:widget.delete_steam_button.setText('Delete VM…')
         widget.steam_hint=QLabel('')
         widget.steam_hint.setWordWrap(True)
         def open_setup(install=False):
@@ -212,25 +280,57 @@ class Plugin(GenericPlugin):
             try:
                 dialog=SteamRuntimeDialog(self.network,widget)
                 if install:QTimer.singleShot(0,dialog.install)
-                else:QTimer.singleShot(0,dialog.desktop)
-                dialog.exec()
+                elif not vm:QTimer.singleShot(0,dialog.desktop)
+                accepted=dialog.exec()==QDialog.DialogCode.Accepted
+                if vm and accepted:
+                    owner=widget
+                    while owner.parentWidget() is not None:owner=owner.parentWidget()
+                    self.main_menu_actions(owner)[0][1]()
             finally:
                 widget.steam_busy=False
                 self.refresh_steam(widget)
         widget.open_steam_setup=open_setup
         def steam_action():
             if widget.steam_state in ('missing','incomplete','unknown'):open_setup(True)
-            elif widget.steam_state=='running':open_setup(False)
+            elif widget.steam_state=='running':
+                if vm:self.steam_task(widget,lambda progress:self.network.open_desktop() or '',lambda _:None)
+                else:open_setup(False)
             else:self.start_steam(widget)
         widget.steam_action.clicked.connect(steam_action)
-        widget.steam_setup_button.clicked.connect(lambda:open_setup(True))
+        if vm:
+            authentication=QPushButton('Saved credentials…')
+            def edit_authentication():
+                from .vm_authentication_dialog import VMAuthenticationDialog
+                VMAuthenticationDialog(self.network,widget).exec()
+            authentication.clicked.connect(edit_authentication)
+            authentication.setToolTip('Update your NordVPN token and provider credentials. Use Setup and sign-in to complete Steam authentication.')
+        widget.steam_setup_button.clicked.connect(lambda:open_setup(not vm))
         widget.stop_steam_button.clicked.connect(lambda:self.stop_steam(widget))
         widget.delete_steam_button.clicked.connect(lambda:self.delete_steam(widget))
         line=QHBoxLayout()
         line.setSpacing(10)
-        for button in (widget.steam_action,widget.steam_setup_button,widget.stop_steam_button,widget.delete_steam_button):line.addWidget(button)
+        if vm:
+            line.addWidget(widget.steam_setup_button)
+            line.addWidget(widget.steam_action)
+        else:
+            for button in (widget.steam_action,widget.steam_setup_button,widget.stop_steam_button,widget.delete_steam_button):line.addWidget(button)
         form.addRow(line)
+        if vm:
+            maintenance=QGroupBox('Maintenance')
+            maintenance.setCheckable(True);maintenance.setChecked(False)
+            maintenance_layout=QVBoxLayout(maintenance)
+            maintenance_body=QWidget(maintenance)
+            maintenance_buttons=QHBoxLayout(maintenance_body)
+            maintenance_buttons.setSpacing(10)
+            maintenance_buttons.setContentsMargins(0,0,0,0)
+            for button in (authentication,widget.stop_steam_button,widget.delete_steam_button):maintenance_buttons.addWidget(button)
+            maintenance_layout.addWidget(maintenance_body)
+            maintenance_body.hide()
+            maintenance.toggled.connect(maintenance_body.setVisible)
+            form.addRow(maintenance)
         form.addRow(widget.steam_hint)
+        if vm:
+            widget.steam_hint.setVisible(False)
         manage=QPushButton('Manage installed content…')
         def manage_content():
             if self.busy or widget.steam_busy:return
@@ -240,14 +340,15 @@ class Plugin(GenericPlugin):
         manage_row=QHBoxLayout()
         manage_row.addWidget(manage)
         manage_row.addStretch()
-        form.addRow(manage_row)
+        if not vm:form.addRow(manage_row)
         widget.steam_timer=QTimer(widget)
         widget.steam_timer.setInterval(5000)
         widget.steam_timer.timeout.connect(lambda:self.refresh_steam(widget) if widget.isVisible() else None)
         widget.steam_timer.start()
-        form = section('Downloads')
-        widget.download_root = QLineEdit(self.settings().value('download_root', '', type=str))
-        widget.download_root.setPlaceholderText(default_download_root() + ' (automatic)')
+        form = section('Game files' if vm else 'Downloads')
+        widget.download_root = QLineEdit(default_download_root() if vm else self.settings().value('download_root', '', type=str))
+        from .download_location import general_download_root
+        widget.download_root.setPlaceholderText(general_download_root() + ' (automatic)')
         browse_root = QPushButton('Browse…')
         def choose_root():
             folder = QFileDialog.getExistingDirectory(widget, 'Default download location', widget.download_root.text() or default_download_root())
@@ -255,9 +356,12 @@ class Plugin(GenericPlugin):
         browse_root.clicked.connect(choose_root)
         root_line = QHBoxLayout(); root_line.setSpacing(10)
         root_line.addWidget(widget.download_root); root_line.addWidget(browse_root)
-        form.addRow('Default location', root_line)
-        hint = QLabel('Leave empty to use the General installation folder automatically. Each game downloads into its own folder; missing folders are created automatically.')
+        form.addRow('Shared download folder' if vm else 'Default location', root_line)
+        hint = QLabel('Steam installs and verifies games here. Playlite uses the same files, with no copy step. Leave empty to use Playlite’s default installation folder. Changing this folder restarts the VM; existing games stay in their original folder.' if vm else 'Leave empty to use the General installation folder automatically. Each game downloads into its own folder; missing folders are created automatically.')
         hint.setWordWrap(True); form.addRow(hint)
+        if vm:
+            manage.setText('Manage downloaded games…')
+            form.addRow(manage_row)
         def on_open():
             widget.settings_closed=False
             if not widget.isVisible():return
@@ -302,11 +406,12 @@ class Plugin(GenericPlugin):
         active=has_downloads(self.network)
         busy=self.busy or widget.steam_busy
         widget.steam_action.setEnabled(not busy and not (active and widget.steam_state in ('missing','incomplete','unknown')))
-        widget.steam_setup_button.setVisible(widget.steam_state=='error')
+        widget.steam_setup_button.setVisible(getattr(self.network,'is_vm',False) is True or widget.steam_state=='error')
         widget.steam_setup_button.setEnabled(not busy and not active)
         widget.stop_steam_button.setEnabled(not busy and not active and widget.steam_state=='running')
         widget.delete_steam_button.setEnabled(not busy and not active)
-        widget.steam_hint.setText('Pause or cancel active and queued downloads before setup, stopping, or deleting Steam.' if active else 'Wait for the current operation to finish.' if busy else 'Exported games and NordVPN credentials are kept when deleting Steam.')
+        widget.steam_hint.setVisible(active or busy or getattr(self.network,'is_vm',False) is not True)
+        widget.steam_hint.setText('Pause or cancel active and queued downloads before setup or stopping Steam.' if active else 'Wait for the current operation to finish.' if busy else '' if getattr(self.network,'is_vm',False) is True else 'Exported games and NordVPN credentials are kept when deleting Steam.')
 
     def steam_task(self,widget,operation,done,inspection=False):
         if self.busy or widget.steam_busy:return
@@ -363,6 +468,22 @@ class Plugin(GenericPlugin):
         self.steam_task(widget,lambda progress:start_with_vpn(self.network,progress),lambda message:(widget.steam_status.setText(message),self.refresh_steam(widget)))
 
     def delete_steam(self,widget):
+        if getattr(self.network,'is_vm',False) is True:
+            from .vpn_lifecycle import has_downloads
+            from PyQt6.QtWidgets import QMessageBox
+            if self.busy or self.jobs or widget.steam_busy or has_downloads(self.network):
+                widget.steam_status.setText('Finish setup and pause or cancel downloads before deleting the VM.');return
+            if not (self.network.profile/'vm.json').exists():
+                widget.steam_status.setText('No Steam VM is installed.');return
+            answer=QMessageBox.question(widget,'Delete Steam VM?',
+                'Delete the Steam VM and its private disk, including Steam, NordVPN and provider logins?\n\nShared game and Workshop files will be kept. You can create a new VM with VM setup.',
+                QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.Cancel,QMessageBox.StandardButton.Cancel)
+            if answer!=QMessageBox.StandardButton.Yes:return
+            def removed(message):
+                self.settings().remove('vm_ready_profile')
+                widget.steam_status.setText(message);widget.steam_state='missing';self.update_steam_controls(widget)
+            self.steam_task(widget,lambda progress:self.network.delete_vm(progress),removed)
+            return
         from .vpn_lifecycle import has_downloads
         if self.busy or widget.steam_busy or has_downloads(self.network):
             widget.steam_status.setText('Steam: finish setup or pause/cancel downloads before deleting.');return
@@ -428,7 +549,12 @@ class Plugin(GenericPlugin):
         value = widget.download_root.text().strip()
         root = Path(value).expanduser() if value else None
         if root is not None and not root.is_absolute():raise ValueError('Choose an absolute default download location.')
-        settings.setValue('download_root', str(root) if root is not None else '')
+        if getattr(self.network,'is_vm',False) is True and (self.network.profile/'vm.json').exists():
+            if root is None:
+                from .download_location import general_download_root
+                root=Path(general_download_root())
+            self.network.set_shared_folder(root)
+        settings.setValue('download_root', str(root) if value and root is not None else '')
         settings.setValue('country', preferences.country)
         settings.setValue('protocol', preferences.protocol)
         settings.setValue('keep_steam_open',widget.keep_steam_open.isChecked())

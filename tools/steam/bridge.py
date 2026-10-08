@@ -16,7 +16,8 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 
-CONTROL=Path('/control');HOME=Path('/home/steam');LIBRARY=Path('/library')
+CONTROL=Path(os.environ.get('PLAYLITE_CONTROL','/control'));HOME=Path(os.environ.get('HOME','/home/steam')) if os.environ.get('PLAYLITE_VM') else Path('/home/steam');LIBRARY=Path(os.environ.get('PLAYLITE_LIBRARY','/library'))
+ASSETS=Path(__file__).resolve().parent
 children=[];steam=None;installer=None
 lock=threading.Lock()
 exports={}
@@ -42,11 +43,15 @@ def prepare_openbox_config(source=Path('/etc/xdg/openbox/rc.xml'),destination=Pa
     return destination
 
 def steam_running():
+    # Reap our launchers and ignore exited processes awaiting another parent.
+    for process in children[:]:
+        if process.poll() is not None:children.remove(process)
     for entry in Path('/proc').iterdir():
         if not entry.name.isdecimal():continue
         try:
             if (entry/'comm').read_text().strip()=='steam' and entry.stat().st_uid==os.getuid():
-                return True
+                state=(entry/'stat').read_text().rsplit(')',1)[1].split()[0]
+                if state not in ('Z','X'):return True
         except (OSError,ValueError):pass
     return False
 
@@ -160,7 +165,7 @@ def download_status(app):
             if export_progress['error']:raise RuntimeError('Steam verified the game, but preparing its export failed: '+export_progress['error'])
             installed=False;export_pending=True
         else:directory=exported
-    if installed:
+    if installed and not os.environ.get('PLAYLITE_VM'):
         # Only game content is exposed to the host. Steam's private home stays private.
         for parent in (directory.parent.parent,directory.parent,directory):parent.chmod(0o755)
         for path in directory.rglob('*'):
@@ -222,7 +227,7 @@ def finish_export(app):
 def steam_action(request):
     payload={key:request[key] for key in ('action','appid','platform','language','dlc','eula_id','eula_version','package_ids','restart_paused') if key in request}
     environment=dict(os.environ,PLAYLITE_STEAM_ACTION=json.dumps(payload))
-    result=subprocess.run([str(HOME/'.local/share/Lumen/lumen'),'--test','/opt/steam_control.lua'],
+    result=subprocess.run([str(HOME/'.local/share/Lumen/lumen'),'--test',str(ASSETS/'steam_control.lua')],
                           cwd=HOME/'.local/share/Lumen',env=environment,capture_output=True,text=True,timeout=12)
     prefix='PLAYLITE_STEAM_RESULT '
     lines=[line[len(prefix):] for line in result.stdout.splitlines() if line.startswith(prefix)]
@@ -280,13 +285,13 @@ def prepare_library():
     library=HOME/'.steam/debian-installation/steamapps/libraryfolders.vdf'
     library.parent.mkdir(parents=True,exist_ok=True)
     (LIBRARY/'steamapps').mkdir(parents=True,exist_ok=True)
-    source=library.read_text() if library.exists() else '\"libraryfolders\"\n{\n \"0\" { \"path\" \"/home/steam/.steam/debian-installation\" \"apps\" {} }\n}\n'
-    if re.search(r'"path"\s+"/library"',source):return
+    source=library.read_text() if library.exists() else '"libraryfolders"\n{\n "0" { "path" "HOME_DEFAULT" "apps" {} }\n}\n'.replace("HOME_DEFAULT",str(HOME/".steam/debian-installation"))
+    if re.search(r'"path"\s+"'+re.escape(str(LIBRARY))+r'"',source):return
     if len(source)>65536 or not source.rstrip().endswith('}'):
         raise RuntimeError('Cannot safely update Steam library configuration.')
     keys=[int(value) for value in re.findall(r'^\s{0,1}"(\d+)"',source,re.MULTILINE)]
     key=max(keys,default=0)+1
-    entry=f'\n "{key}" {{ "path" "/library" "label" "Playlite downloads" "apps" {{}} }}\n'
+    entry=f'\n "{key}" {{ "path" "{LIBRARY}" "label" "Playlite downloads" "apps" {{}} }}\n'
     temporary=library.with_suffix('.playlite-tmp')
     temporary.write_text(source.rstrip()[:-1]+entry+'}\n')
     temporary.replace(library)
@@ -298,33 +303,42 @@ def launch(args,log,umask=0o077,environment=None):
     children.append(process)
     return process
 
+def has_saved_login(home=None):
+    """Handle both current and older Steam loginusers.vdf formats."""
+    try:
+        users=parse_vdf(((home or HOME)/'.steam/steam/config/loginusers.vdf').read_text()).get('users',{})
+        for steamid,account in users.items():
+            if not re.fullmatch(r'[0-9]{17}',steamid) or not isinstance(account,dict):continue
+            if any(account.get(key)=='1' for key in ('RememberPassword','AutoLogin','AllowAutoLogin')):
+                return True
+    except (OSError,ValueError,AttributeError):
+        pass
+    return False
+
+
 def dispatch(request):
     global steam,installer
     command=request.get('command')
     if command=='status':
-        return {'steam_running':steam_running(),
+        saved_session=has_saved_login()
+        return {'steam_session_saved':saved_session,'steam_running':steam_running(),
                 'steam_ready':(HOME/'.steam/steam/steam.sh').is_file() and (HOME/'.steam/steam/ubuntu12_32/steamclient.so').is_file(),
                 'moon_installed':(HOME/'.local/share/Lumen/luatools').is_dir(),
                 'moon_installing':installer is not None and installer.poll() is None,
                 'moon_install_exit':installer.poll() if installer else None,
-                'library':'/library'}
+                'library':str(LIBRARY)}
     if command=='start':
         if not steam_running():
             prepare_library()
             # The UI sidecar requires CEF debugging even when the wrapper's
             # webhelper argument rewrite misses a newer Steam launch path.
-            steam=launch([steam_binary(),'-no-cef-sandbox','-cef-enable-debugging'],'steam.log',umask=0o022,
+            steam=launch([steam_binary(),'-no-cef-sandbox','-cef-enable-debugging',*(['-cef-disable-gpu'] if os.environ.get('PLAYLITE_VM') else [])],'steam.log',umask=0o022,
                          environment=dict(os.environ,SLSSTEAM_AUDIT_BINDALL='1'))
         lumen=HOME/'.local/share/Lumen'
         backend_main=lumen/'luatools/backend/main.lua'
-        marker='-- Playlite private control bridge'
         if backend_main.is_file():
-            source=backend_main.read_text()
-            if marker in source:
-                updated=source[:source.index(marker)]+marker+'\n'+Path('/opt/moon_bridge.lua').read_text()
-                if updated!=source:
-                    temporary=backend_main.with_suffix('.playlite-tmp')
-                    temporary.write_text(updated);temporary.replace(backend_main)
+            from setup_moon import install_bridge
+            install_bridge(HOME, CONTROL if os.environ.get('PLAYLITE_VM') else None)
         if (lumen/'lumen').is_file():
             environment=dict(os.environ,LUMEN_BACKEND_DIR=str(lumen/'luatools/backend'),LUMEN_LUA_DIR=str(lumen/'lua'))
             # Lumen's own flock prevents duplicate sidecars. Launching explicitly
@@ -335,10 +349,10 @@ def dispatch(request):
         return dispatch({'command':'status'})
     if command=='install_moon':
         if installer is None or installer.poll() is not None:
-            installer=launch(['python3','/opt/setup_moon.py'],'moon-setup.log')
+            installer=launch(['python3',str(ASSETS/'setup_moon.py')],'moon-setup.log')
         return dispatch({'command':'status'})
-    if command in ('add','add_status','cancel_add','authentication_status'):
-        app=1 if command=='authentication_status' else request.get('appid')
+    if command in ('add','add_status','cancel_add','authentication_status','provider_login'):
+        app=1 if command in ('authentication_status','provider_login') else request.get('appid')
         app_id(app)
         from provider_limits import install_capture,read_limits
         backend=HOME/'.local/share/Lumen/luatools/backend'
@@ -347,9 +361,16 @@ def dispatch(request):
             (backend/'temp_dl'/f'{app}_state.json.limits.jsonl').unlink(missing_ok=True)
         identifier=uuid.uuid4().hex
         pending=CONTROL/'moon-request.tmp'
-        pending.write_text(json.dumps({'id':identifier,'command':command,'appid':app}))
+        payload={'id':identifier,'command':command,'appid':app}
+        if command=='provider_login':
+            provider=request.get('provider');credential=request.get('credential')
+            if provider not in ('luatools','hubcap') or not isinstance(credential,str) or not 1<=len(credential)<=2048 or any(c in credential for c in '\r\n\0'):
+                raise ValueError('Invalid provider credentials.')
+            payload.update(provider=provider,credential=credential)
+        pending.write_text(json.dumps(payload))
+        pending.chmod(0o600)
         pending.replace(CONTROL/'moon-request.json')
-        deadline=time.monotonic()+(45 if command=='authentication_status' else 8)
+        deadline=time.monotonic()+(60 if command in ('authentication_status','provider_login') else 8)
         while time.monotonic()<deadline:
             path=CONTROL/'moon-response.json'
             if path.exists() and path.stat().st_size<=65536:
@@ -364,7 +385,8 @@ def dispatch(request):
         raise RuntimeError('LuaMoon bridge is not ready. Open Steam with LuaMoon loaded.')
     if command=='stop':
         if steam_running():
-            launch([steam_binary(),'-shutdown'],'steam.log')
+            shutdown=HOME/'.steam/debian-installation/steam.sh'
+            launch([str(shutdown) if shutdown.is_file() else steam_binary(),'-shutdown'],'steam.log')
         return {'stopping':True}
     if command=='installed_games':return installed_games()
     if command=='finish_export':return finish_export(app_id(request.get('appid')))

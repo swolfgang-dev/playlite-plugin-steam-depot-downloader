@@ -9,6 +9,12 @@ from .constants import IMAGE,WORKER_LABEL,PROFILE_SUFFIX,OWNER_LABEL,OWNER
 RUNTIME_IMAGE='playlite-steam-runtime'+PROFILE_SUFFIX+':test'
 
 class SteamRuntime:
+    def __new__(cls, network, root=None):
+        if getattr(network, 'is_vm', False) is True:
+            from .vm_backend import VMSteamRuntime
+            return VMSteamRuntime(network, root)
+        return super().__new__(cls)
+
     def __init__(self,network,root=None):
         self.network=network
         self.root=Path(root or Path.home()/'.local/share/playlite/steam-runtime')
@@ -117,6 +123,11 @@ class SteamRuntime:
 
 def installation_status(network):
     """Inspect the existing installation without starting or provisioning it."""
+    if getattr(network, 'is_vm', False) is True:
+        try:state=SteamRuntime(network).request('status')
+        except (OSError,RuntimeError):return 'stopped'
+        if not state.get('setup_complete') or not state.get('steam_ready') or not state.get('moon_installed'):return 'incomplete'
+        return 'running' if state.get('steam_running') else 'stopped'
     image=subprocess.run(['docker','image','inspect',RUNTIME_IMAGE],capture_output=True,timeout=10)
     if image.returncode:return 'missing'
     runtime=SteamRuntime(network)
@@ -132,6 +143,11 @@ def installation_status(network):
 def start_with_vpn(network,progress=lambda message:None):
     """Launch an installed private Steam client whenever its VPN is opened."""
     import time
+    if getattr(network, 'is_vm', False) is True:
+        runtime=SteamRuntime(network)
+        progress('Starting Steam inside the VM…')
+        runtime.start();runtime.request('start')
+        return 'Steam started inside the VM.'
     if not network.container:return
     image=subprocess.run(['docker','image','inspect',RUNTIME_IMAGE],capture_output=True,timeout=30)
     if image.returncode:
