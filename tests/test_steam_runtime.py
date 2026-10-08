@@ -10,6 +10,20 @@ from downloader.steam_runtime import SteamRuntime,RUNTIME_IMAGE
 from downloader.constants import IMAGE,WORKER_LABEL
 
 class RuntimeTests(unittest.TestCase):
+    def test_permission_repair_only_changes_owned_temporary_files(self):
+        spec=importlib.util.spec_from_file_location('permissions_bridge',Path(__file__).resolve().parents[1]/'tools/steam/bridge.py')
+        bridge=importlib.util.module_from_spec(spec);spec.loader.exec_module(bridge)
+        with tempfile.TemporaryDirectory() as folder:
+            bridge.HOME=Path(folder)
+            root=bridge.HOME/'.steam/debian-installation/steamapps/downloading';root.mkdir(parents=True)
+            temporary=root/'partial';temporary.write_text('partial');temporary.chmod(0o555)
+            installed=bridge.HOME/'installed';installed.write_text('game');installed.chmod(0o555)
+            (root/'link').symlink_to(installed)
+            self.assertEqual(bridge.repair_download_permissions(),1)
+            self.assertEqual(temporary.stat().st_mode & 0o777,0o755)
+            self.assertEqual(installed.stat().st_mode & 0o777,0o555)
+
+
     def test_exited_steam_process_is_not_running(self):
         path=Path(__file__).resolve().parents[1]/'tools/steam/bridge.py'
         spec=importlib.util.spec_from_file_location('zombie_bridge',path)

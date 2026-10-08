@@ -19,6 +19,7 @@ printf '[Seat:*]\nautologin-user=ubuntu\nautologin-user-timeout=0\nuser-session=
   > /etc/lightdm/lightdm.conf.d/50-playlite-vm.conf
 systemctl enable --now qemu-guest-agent
 python3 /usr/local/lib/playlite-vm/setup-runtime.py
+bash /usr/local/lib/playlite-vm/install-steam-auto-crack.sh
 runuser -u ubuntu -- python3 /usr/local/lib/playlite-vm/prepare-storage.py
 mkdir -p /home/ubuntu/.config/xfce4/xfconf/xfce-perchannel-xml
 cat > /home/ubuntu/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml <<'EOF'

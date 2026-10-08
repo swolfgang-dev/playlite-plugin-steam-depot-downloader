@@ -46,10 +46,38 @@ enabled and SPICE file transfer is disabled. Only the chosen games folder is
 exported as a filesystem.
 
 First boot installs a minimal Ubuntu 24.04 XFCE desktop, Steam, NordVPN GUI, and
+Wine with Steam Auto Crack 3.5.1.0 (latest stable release checked 2026-10-08), plus
+the x86 Windows .NET 10.0.12 Desktop Runtime required by its WPF GUI, and
 the graphics/SSL/SVG/clipboard dependencies discovered while configuring the
 comparison VM. It can take several minutes. Package installation needs internet
 before NordVPN sign-in. Setup output is `/var/log/playlite-vm-setup.log` inside
 the guest; successful setup creates `/var/lib/playlite-vm/setup-complete`.
+
+Open **Steam Auto Crack (Wine)** from the guest desktop or applications menu.
+The program runs as `ubuntu` in a separate Wine prefix at
+`~/.local/share/playlite/wine-steam-auto-crack`, with its working directory set
+to the extracted application folder. In its Windows file chooser, shared games
+are on the dedicated `S:\` drive (also accessible at `Z:\mnt\standalone`).
+This maps directly to `/mnt/standalone`, the same mount used by Steam's
+`steamapps/common` link, with the guest user's existing read/write permissions.
+The launcher verifies that the library is mounted before opening the program.
+The app's Wine Desktop folder also points to `S:\`, so its folder picker
+immediately lists the library's game folders. This setting is local to the
+app's dedicated Wine prefix.
+The launcher opens a terminal for diagnostic
+output. The recipe uses WineHQ stable: Wine 11 was verified to accept text input
+in the GUI, whereas Ubuntu's Wine 9 opens it but drops typed characters.
+The recipe registers freely licensed Liberation font substitutes inside the
+prefix because WPF font fallback crashes with Wine's usual substitutions.
+Downloads use pinned release URLs and upstream SHA-256/SHA-512 checksums;
+the recipe does not automatically upgrade the application on each boot.
+
+Existing VMs are retained and do not rerun first-boot provisioning. To add this
+to one, copy `tools/vm/prepare-wine-fonts.py` to
+`/usr/local/lib/playlite-vm/prepare-wine-fonts.py`, then copy
+`tools/vm/install-steam-auto-crack.sh` into the guest and run
+`sudo bash install-steam-auto-crack.sh` from a guest terminal. This installs
+only Wine, the runtime, the application, and its launchers.
 
 1. Sign into NordVPN using its desktop icon.
 2. Click **Configure NordVPN after sign-in**. This enables firewall, routing,

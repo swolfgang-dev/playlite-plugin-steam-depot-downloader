@@ -271,6 +271,7 @@ class SteamQueueRunner(QObject):
                 registered_deadline=time.monotonic()+180
                 seen_events=set(previous_events);samples=[];agreement_check=0;activity_seen=False
                 recovery=PausedRecovery()
+                permission_recovered=False
                 while True:
                     if self.cancelled.is_set():raise RuntimeError('Cancelled')
                     self.network.check()
@@ -284,7 +285,15 @@ class SteamQueueRunner(QObject):
                     current_events=[event for event in state.get('events',[]) if event not in previous_events]
                     activity_seen=activity_seen or bool(current_events) or bool(int(state.get('flags',0)) & 1024) or bool(state.get('export_pending'))
                     failure=download_failure(state,previous_events)
-                    if failure:raise RuntimeError(failure)
+                    if failure:
+                        if 'missing file permissions' in failure.lower() and not permission_recovered:
+                            permission_recovered=True
+                            progress('Repairing temporary download permissions and retrying with partial files retained')
+                            installation=self.runtime.request('install',app,platform=platform,language=self.snapshot['language'],dlc=self.snapshot['dlc'],recover_paused=True)
+                            previous_events.update(state.get('events',[]));previous_events.update(installation.get('previous_events',[]))
+                            registered_deadline=time.monotonic()+180
+                            continue
+                        raise RuntimeError(failure)
                     if not activity_seen and not state.get('installed') and time.monotonic()>registered_deadline:
                         raise RuntimeError('Steam did not start the current installation within three minutes. Check its isolated desktop for a confirmation or error.')
                     if not state.get('installed') and time.monotonic()>=agreement_check:

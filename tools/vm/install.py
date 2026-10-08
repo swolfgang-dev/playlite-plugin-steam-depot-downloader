@@ -21,7 +21,7 @@ ASSETS = Path(__file__).resolve().parent
 IMAGE = 'noble-server-cloudimg-amd64.img'
 IMAGE_URL = 'https://cloud-images.ubuntu.com/noble/current/'
 ASSET_FILES = ('install.py', 'guest_control.py', 'prepare-storage.py',
-               'provision-guest.sh', 'install-nordvpn.sh', 'install.sh', 'README.md', 'runtime_server.py', 'rpc.py', 'steam_sign_in.py',
+               'provision-guest.sh', 'install-nordvpn.sh', 'install-steam-auto-crack.sh', 'prepare-wine-fonts.py', 'install.sh', 'README.md', 'runtime_server.py', 'rpc.py', 'steam_sign_in.py',
                'setup-runtime.py', 'steam/bridge.py', 'steam/bootstrap_steam.py', 'steam/setup_moon.py', 'steam/moon_bridge.lua',
                'steam/steam_control.lua', 'steam/retail_selection.py', 'steam/provider_limits.py',
                'steam/moon-install.sh', 'steam/MOON-LICENSE')
@@ -125,7 +125,9 @@ def asset_path(name):
 def cloud_config(cfg):
     scripts = [('guest_control.py', '/usr/local/bin/playlite-vm-control', '0755'),
                ('prepare-storage.py', '/usr/local/lib/playlite-vm/prepare-storage.py', '0755'),
-               ('provision-guest.sh', '/usr/local/lib/playlite-vm/provision-guest.sh', '0755')]
+               ('provision-guest.sh', '/usr/local/lib/playlite-vm/provision-guest.sh', '0755'),
+               ('install-steam-auto-crack.sh', '/usr/local/lib/playlite-vm/install-steam-auto-crack.sh', '0755'),
+               ('prepare-wine-fonts.py', '/usr/local/lib/playlite-vm/prepare-wine-fonts.py', '0755')]
     files = [{'path': target, 'permissions': mode, 'content': (ASSETS / source).read_text()}
              for source, target, mode in scripts]
     for name in ASSET_FILES:

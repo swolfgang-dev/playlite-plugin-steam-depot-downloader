@@ -55,6 +55,31 @@ def steam_running():
         except (OSError,ValueError):pass
     return False
 
+def finish_steam_shutdown(targets):
+    deadline=time.monotonic()+8
+    while steam_running() and time.monotonic()<deadline:time.sleep(.25)
+    if not steam_running():return
+    for pid,start in targets:
+        entry=Path('/proc')/str(pid)
+        try:
+            state=(entry/'stat').read_text().rsplit(')',1)[1].split()
+            if entry.stat().st_uid==os.getuid() and (entry/'comm').read_text().strip()=='steam' and state[19]==start and state[0] not in ('Z','X'):
+                os.kill(pid,signal.SIGTERM)
+        except (OSError,ValueError,IndexError):pass
+
+
+def repair_download_permissions():
+    root=(HOME/'.steam/debian-installation/steamapps/downloading').resolve()
+    if not root.is_dir():return 0
+    repaired=0
+    for path in root.rglob('*'):
+        if path.is_symlink() or not path.is_file():continue
+        info=path.stat()
+        if info.st_uid==os.getuid() and not info.st_mode & 0o200:
+            path.chmod(info.st_mode | 0o200);repaired+=1
+    return repaired
+
+
 def steam_binary():
     wrapper=HOME/'.local/share/SLSsteam/path/steam'
     return str(wrapper) if wrapper.is_file() else '/usr/games/steam'
@@ -386,7 +411,15 @@ def dispatch(request):
     if command=='stop':
         if steam_running():
             shutdown=HOME/'.steam/debian-installation/steam.sh'
-            launch([str(shutdown) if shutdown.is_file() else steam_binary(),'-shutdown'],'steam.log')
+            targets=[]
+            for entry in Path('/proc').iterdir():
+                try:
+                    if entry.name.isdecimal() and entry.stat().st_uid==os.getuid() and (entry/'comm').read_text().strip()=='steam':
+                        targets.append((int(entry.name),(entry/'stat').read_text().rsplit(')',1)[1].split()[19]))
+                except (OSError,ValueError,IndexError):pass
+            environment=os.environ.copy();environment.pop('LD_AUDIT',None);environment.pop('LD_PRELOAD',None)
+            launch([str(shutdown) if shutdown.is_file() else steam_binary(),'-shutdown'],'steam.log',environment=environment)
+            threading.Thread(target=finish_steam_shutdown,args=(targets,),daemon=True).start()
         return {'stopping':True}
     if command=='installed_games':return installed_games()
     if command=='finish_export':return finish_export(app_id(request.get('appid')))
@@ -412,6 +445,7 @@ def dispatch(request):
         if not result.get('accepted'):raise RuntimeError('Steam agreement changed. Review the current version again.')
         return result
     if command=='install':
+        repair_download_permissions()
         app=app_id(request.get('appid'))
         if request.get('platform') not in ('windows','linux'):
             raise ValueError('Choose Windows or Linux for isolated Steam. Use the depot downloader for macOS.')

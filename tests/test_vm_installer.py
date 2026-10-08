@@ -77,6 +77,11 @@ class VMInstallerTests(unittest.TestCase):
             files={file['path'] for file in cloud['write_files']}
             self.assertIn('/usr/local/lib/playlite-vm/steam/setup_moon.py',files)
             self.assertIn('/usr/local/lib/playlite-vm/runtime_server.py',files)
+            wine_setup = next(file for file in cloud['write_files']
+                              if file['path'] == '/usr/local/lib/playlite-vm/install-steam-auto-crack.sh')
+            self.assertEqual(wine_setup['permissions'], '0755')
+            self.assertIn('runuser -u ubuntu', wine_setup['content'])
+            self.assertIn('install-steam-auto-crack.sh', installer.ASSET_FILES)
             self.assertNotIn('/home/ubuntu/.steam/steam/config/loginusers.vdf',files)
 
     def test_missing_merged_mount_never_starts_vm(self):

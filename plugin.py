@@ -316,9 +316,12 @@ class Plugin(GenericPlugin):
             for button in (widget.steam_action,widget.steam_setup_button,widget.stop_steam_button,widget.delete_steam_button):line.addWidget(button)
         form.addRow(line)
         if vm:
-            maintenance=QGroupBox('Maintenance')
-            maintenance.setCheckable(True);maintenance.setChecked(False)
+            maintenance=QWidget()
             maintenance_layout=QVBoxLayout(maintenance)
+            maintenance_layout.setContentsMargins(0,0,0,0)
+            maintenance_layout.setSpacing(10)
+            maintenance_toggle=QCheckBox('Maintenance')
+            maintenance_layout.addWidget(maintenance_toggle)
             maintenance_body=QWidget(maintenance)
             maintenance_buttons=QHBoxLayout(maintenance_body)
             maintenance_buttons.setSpacing(10)
@@ -326,7 +329,7 @@ class Plugin(GenericPlugin):
             for button in (authentication,widget.stop_steam_button,widget.delete_steam_button):maintenance_buttons.addWidget(button)
             maintenance_layout.addWidget(maintenance_body)
             maintenance_body.hide()
-            maintenance.toggled.connect(maintenance_body.setVisible)
+            maintenance_toggle.toggled.connect(maintenance_body.setVisible)
             form.addRow(maintenance)
         form.addRow(widget.steam_hint)
         if vm:
