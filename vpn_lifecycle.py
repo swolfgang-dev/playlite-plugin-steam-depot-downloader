@@ -91,7 +91,9 @@ def watch_queue(network,queue):
     network.download_queue=queue
     if vars(network).get('_watched_queue') is queue:return
     old=vars(network).get('_watched_queue')
-    if old is not None:old.changed.disconnect(network._queue_changed)
+    if old is not None:
+        try:old.changed.disconnect(network._queue_changed)
+        except (RuntimeError,TypeError):pass  # The previous library window may already be destroyed.
     network._watched_queue=queue
     network._queue_was_busy=has_downloads(network)
     def changed():

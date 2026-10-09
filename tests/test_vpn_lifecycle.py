@@ -58,6 +58,20 @@ class LifecycleTests(unittest.TestCase):
         queue.entries[1].state='Complete';queue.changed.emit()
         self.network.disconnect.assert_called_once()
 
+    def test_job_completion_after_signal_owner_is_destroyed(self):
+        from PyQt6 import sip
+        from downloader.plugin import Job
+        job=Job(lambda: 'Finished')
+        sip.delete(job.signals)
+        job.run()
+
+    def test_replacing_destroyed_queue(self):
+        from PyQt6 import sip
+        old=Queue([]);watch_queue(self.network,old)
+        sip.delete(old)
+        replacement=Queue([]);watch_queue(self.network,replacement)
+        self.assertIs(self.network._watched_queue,replacement)
+
     def test_queue_drains_without_open_windows(self):
         queue=Queue(['Downloading']);watch_queue(self.network,queue)
         queue.entries[0].state='Failed';queue.changed.emit()

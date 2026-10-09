@@ -27,10 +27,16 @@ class Job(QRunnable):
             text = self.function()
         except Exception as error:
             text = str(error)
-        if QThread.currentThread() == self.signals.thread():
-            self.signals.deliver(text)
-        else:
-            QMetaObject.invokeMethod(self.signals, 'deliver', Qt.ConnectionType.QueuedConnection, Q_ARG(str, text))
+        try:
+            if QThread.currentThread() == self.signals.thread():
+                self.signals.deliver(text)
+            else:
+                QMetaObject.invokeMethod(self.signals, 'deliver', Qt.ConnectionType.QueuedConnection, Q_ARG(str, text))
+        except RuntimeError:
+            # QApplication can destroy signal owners while a shutdown job finishes.
+            from PyQt6 import sip
+            if not sip.isdeleted(self.signals):
+                raise
 
 class SettingsWidget(QWidget):
     """Start the connection only when the settings page becomes visible."""
