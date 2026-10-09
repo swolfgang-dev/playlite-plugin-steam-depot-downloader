@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import sys
+import os
 import time
 import unittest
 from unittest.mock import patch
@@ -15,6 +16,15 @@ if 'downloader' not in sys.modules:
 from downloader.plugin import Plugin
 
 class UiTests(unittest.TestCase):
+    def setUp(self):
+        # These lifecycle tests cover the retained Docker backend explicitly.
+        backend = patch.dict(os.environ, {'PLAYLITE_STEAM_BACKEND': 'docker'})
+        backend.start(); self.addCleanup(backend.stop)
+        enabled = patch('downloader.vm_backend.enabled', return_value=False)
+        enabled.start(); self.addCleanup(enabled.stop)
+        shared = patch.object(self.app, '_playlite_depot_network', None, create=True)
+        shared.start(); self.addCleanup(shared.stop)
+
     def test_open_vm_desktop_does_not_create_setup_dialog(self):
         from unittest.mock import Mock
         from downloader.download_dialog import DownloadDialog
@@ -81,7 +91,7 @@ class UiTests(unittest.TestCase):
         self.assertTrue(all(not button.isEnabled() for button in widget.buttons[:-1]))
         widget.buttons[-1].click()
         self.wait(plugin)
-        self.assertIn('cancelled', widget.status.text())
+        self.assertIn('cancelled', widget.status.text().casefold())
         self.assertTrue(all(button.isEnabled() for button in widget.buttons))
 
 if __name__ == '__main__': unittest.main()
@@ -96,10 +106,10 @@ class AuthenticationLayoutTests(unittest.TestCase):
     def test_main_settings_account_order_and_saved_status(self):
         from PyQt6.QtWidgets import QLabel
         app = QApplication.instance() or QApplication([])
-        with patch('downloader.credentials.MoonSessionWallet.read', return_value=None):
+        with patch.dict(os.environ, {'PLAYLITE_STEAM_BACKEND': 'vm'}), patch.object(app, '_playlite_depot_network', None, create=True), patch('downloader.credentials.MoonSessionWallet.read', return_value=None):
             widget = Plugin().create_settings()
         self.assertFalse(hasattr(widget, 'auth_status'))
-        self.assertIn('Isolated Steam', ' '.join(label.text() for label in widget.findChildren(QLabel)))
+        self.assertIn('Steam environment', ' '.join(label.text() for label in widget.findChildren(QLabel)))
         self.assertFalse(hasattr(widget, 'password'))
 
     def test_steam_popup_only_shows_steam_authentication(self):

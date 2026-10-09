@@ -5,7 +5,6 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import time
 import uuid
 
 root = Path(__file__).resolve().parents[1]
@@ -13,7 +12,7 @@ spec = importlib.util.spec_from_file_location('downloader', root / '__init__.py'
 module = importlib.util.module_from_spec(spec)
 sys.modules['downloader'] = module
 spec.loader.exec_module(module)
-from downloader.network import Network, IMAGE, LABEL, WORKER_LABEL
+from downloader.network import IMAGE, LABEL, WORKER_LABEL
 from downloader.guardian import process_token
 
 

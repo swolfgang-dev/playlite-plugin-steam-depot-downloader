@@ -10,7 +10,7 @@ import threading
 import sys
 from .constants import IMAGE, LABEL, WORKER_LABEL, PROFILE_SUFFIX
 from .guardian import process_token, safe_directory
-from .settings import Preferences
+from .settings import Preferences as Preferences
 from .recommendations import recommended_servers
 from .credentials import validate_credentials
 

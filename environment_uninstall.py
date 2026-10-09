@@ -1,7 +1,6 @@
 """Optional removal of resources owned by this Steam Downloader profile."""
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 from PyQt6.QtCore import QThreadPool

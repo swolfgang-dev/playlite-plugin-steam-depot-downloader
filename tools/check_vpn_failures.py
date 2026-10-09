@@ -37,7 +37,7 @@ def wait_ready(network, timeout=90):
     limit = time.monotonic() + timeout
     while time.monotonic() < limit:
         data = network.inspect()
-        logs = run('logs', '--tail', '80', network.container)
+        run('logs', '--tail', '80', network.container)
         if data['State'].get('Health', {}).get('Status') == 'healthy':
             try:
                 result = network.check()

@@ -10,7 +10,7 @@ from pathlib import Path
 from PyQt6.QtCore import QProcess, QThreadPool, QSettings, QTimer, Qt, QSize
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,
-                            QLabel, QPlainTextEdit, QFileDialog, QHBoxLayout, QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QProgressBar, QSizePolicy, QMenu, QApplication)
+                            QLabel, QFileDialog, QHBoxLayout, QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QProgressBar, QSizePolicy, QMenu, QApplication)
 from .moon import Moon
 from .credentials import MoonSessionWallet, SteamSessionWallet, HubcapKeyWallet
 from .providers import SOURCES, Transport, prepare_depot
@@ -108,7 +108,21 @@ class DownloadDialog(QDialog):
         if getattr(network,'is_vm',False) is True:browse.hide()
         line = QHBoxLayout(); line.setSpacing(10); line.addWidget(self.destination); line.addWidget(browse)
         form.addRow('Download folder', line); download_rows.append(line)
-        self.start_button = QPushButton('Download selected depot'); self.start_button.clicked.connect(self.prepare_download)
+        self.location_summary = QLabel()
+        self.location_summary.setWordWrap(True)
+        def location_summary():
+            platform = self.depot.currentText() or 'Choose platform'
+            host = self.destination.text() or 'Choose download folder'
+            if getattr(self.network, 'is_vm', False) is True:
+                guest = '/mnt/standalone'
+                self.location_summary.setText('Platform: ' + platform + '\nHost destination: ' + host + '\nVM library mount: ' + guest)
+            else:
+                self.location_summary.setText('Platform: ' + platform + '\nDestination: ' + host)
+        self.destination.textChanged.connect(lambda _: location_summary())
+        self.depot.currentIndexChanged.connect(lambda _: location_summary())
+        form.addRow(self.location_summary); download_rows.append(self.location_summary)
+        location_summary()
+        self.start_button = QPushButton('Download selected depot'); self.start_button.setProperty('primary',True); self.start_button.clicked.connect(self.prepare_download)
         form.addRow(self.start_button)
         from .downloader_log import DownloaderLog,LoggedStatus
         self.log = DownloaderLog(); self.log.setReadOnly(True); form.addRow(self.log)
@@ -723,7 +737,7 @@ class DownloadDialog(QDialog):
         try:
             app = self.game_app()
             source = self.provider.currentText()
-            username = self.username.text().strip()
+            self.username.text().strip()
         except Exception as error:
             self.status.setText(str(error)); return
         self.rows=[]; self.content_info=None; self.content_plan=[]
@@ -750,7 +764,7 @@ class DownloadDialog(QDialog):
                     if name!='public' and isinstance(settings,dict) and str(settings.get('pwdrequired','0'))!='1':self.branch.addItem(name,name)
             self.branch.blockSignals(False)
             self.depot.blockSignals(True); self.depot.clear()
-            from .app_info import content_depots, matches_platform
+            from .app_info import content_depots
             advertised={os.strip() for row in content_depots(info).values() for os in str(row.get('config',{}).get('oslist','')).split(',') if os.strip()}
             for platform, label in (('windows','Windows'),('linux','Linux')):
                 if info.get('_steam_catalog') and platform in info.get('platforms',[]) or (not info.get('_steam_catalog') and (not advertised or platform in advertised) and any(not str(row.get('config',{}).get('oslist','')) or platform in str(row.get('config',{}).get('oslist','')).split(',') for row in content_depots(info).values())):

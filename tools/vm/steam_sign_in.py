@@ -1,7 +1,5 @@
 """Mirror only Steam's sign-in window; all credentials stay in its own UI."""
 import base64
-import os
-from pathlib import Path
 import subprocess
 
 KEYS={'Tab','shift+Tab','Return','BackSpace','Delete','Left','Right','Up','Down','Home','End','ctrl+a','Escape'}

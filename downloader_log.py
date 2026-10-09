@@ -29,7 +29,9 @@ class DownloaderLog(QPlainTextEdit):
             self.last_connection=now
         self.last=message
         line=datetime.now().astimezone().strftime('[%Y-%m-%d %H:%M:%S %z] ')+message
+        bar=self.verticalScrollBar();position=bar.value();following=position>=bar.maximum()-2
         super().appendPlainText(line)
+        bar.setValue(bar.maximum() if following else position)
         try:
             self.path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
             if self.path.exists() and self.path.stat().st_size>1024*1024:

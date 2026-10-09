@@ -49,7 +49,7 @@ class Plugin(GenericPlugin):
         app = QCoreApplication.instance()
         self.network = getattr(app, '_playlite_depot_network', None) if app else None
         if self.network is None:
-            from .vm_backend import enabled, VMNetwork
+            from .vm_backend import VMNetwork
             self.network = Network() if os.environ.get('PLAYLITE_STEAM_BACKEND')=='docker' else VMNetwork()
             if app is not None:
                 app._playlite_depot_network = self.network

@@ -1,6 +1,6 @@
 """Manage content in the private Steam installation through native Steam actions."""
 import time
-from PyQt6.QtCore import Qt,QThreadPool,QTimer
+from PyQt6.QtCore import QThreadPool,QTimer
 from PyQt6.QtWidgets import QDialog,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QTableWidget,QTableWidgetItem,QAbstractItemView,QHeaderView,QMessageBox
 from .steam_runtime import SteamRuntime
 

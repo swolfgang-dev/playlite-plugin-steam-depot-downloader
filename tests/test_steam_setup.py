@@ -8,6 +8,11 @@ from downloader.steam_setup import provision,image_revision
 from downloader.steam_catalog import fetch_catalog
 
 class SetupTests(unittest.TestCase):
+    def setUp(self):
+        # Mock connections below exercise Docker setup, not VM migration.
+        backend = patch('downloader.vm_backend.enabled', return_value=False)
+        backend.start(); self.addCleanup(backend.stop)
+
     def test_downloader_respects_disabled_automatic_start(self):
         from PyQt6.QtWidgets import QApplication
         from downloader.download_dialog import DownloadDialog

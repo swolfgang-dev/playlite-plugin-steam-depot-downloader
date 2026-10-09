@@ -1,4 +1,4 @@
-"""Four-stage setup: configure, provision, install, finish authentication."""
+"""Five-stage setup: configure, provision, install, sign in, verify providers."""
 from pathlib import Path
 import re
 from PyQt6.QtCore import QSettings,QTimer

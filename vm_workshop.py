@@ -4,7 +4,7 @@ import time
 from PyQt6.QtCore import QThreadPool
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton
 
-from .vm_backend import enabled, VMNetwork, VMSteamRuntime
+from .vm_backend import VMNetwork, VMSteamRuntime
 
 
 class WorkshopVM:

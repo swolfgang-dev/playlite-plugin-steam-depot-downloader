@@ -15,6 +15,25 @@ from downloader.steam_queue_runner import ensure_vpn
 
 
 class VMBackendTests(unittest.TestCase):
+    def test_plugin_shutdown_uses_vm_session_cleanup(self):
+        from downloader.plugin import Plugin
+        with tempfile.TemporaryDirectory() as folder:
+            network = VMNetwork(folder)
+            with patch.object(network, 'close_session_background') as close, patch.object(network, 'disconnect') as disconnect:
+                Plugin.shutdown(Mock(network=network))
+            close.assert_called_once_with()
+            disconnect.assert_not_called()
+            self.assertTrue(network.cancelled.is_set())
+
+    def test_closing_settings_keeps_vm_vpn_connected(self):
+        from downloader.vpn_lifecycle import disconnect_when_idle
+        with tempfile.TemporaryDirectory() as folder:
+            network = VMNetwork(folder)
+            with patch.object(network, 'disconnect') as disconnect, patch.object(network, 'cancel') as cancel:
+                disconnect_when_idle(network)
+            disconnect.assert_not_called()
+            cancel.assert_not_called()
+
     def test_session_shutdown_launches_independent_helper(self):
         with tempfile.TemporaryDirectory() as folder:
             network=VMNetwork(folder);(Path(folder)/'vm.json').write_text('{}')
