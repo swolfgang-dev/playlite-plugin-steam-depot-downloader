@@ -253,14 +253,14 @@ def steam_action(request):
     payload={key:request[key] for key in ('action','appid','platform','language','dlc','eula_id','eula_version','package_ids','restart_paused') if key in request}
     environment=dict(os.environ,PLAYLITE_STEAM_ACTION=json.dumps(payload))
     result=subprocess.run([str(HOME/'.local/share/Lumen/lumen'),'--test',str(ASSETS/'steam_control.lua')],
-                          cwd=HOME/'.local/share/Lumen',env=environment,capture_output=True,text=True,timeout=12)
+                          cwd=HOME/'.local/share/Lumen',env=environment,capture_output=True,text=True,timeout=30)
     prefix='PLAYLITE_STEAM_RESULT '
     lines=[line[len(prefix):] for line in result.stdout.splitlines() if line.startswith(prefix)]
     if result.returncode or len(lines)!=1:
         raise RuntimeError('Steam could not apply the selected content settings. Check its isolated desktop.')
     response=json.loads(lines[0])
     if request.get('action')=='install' and not response.get('requested'):
-        raise RuntimeError('Steam rejected the selected '+str(response.get('failed_stage','content'))+' settings.')
+        raise RuntimeError('Steam rejected the selected '+str(response.get('failed_stage','content'))+' settings.'+(' '+str(response['error'])[:500] if response.get('error') else ''))
     return response
 
 class AgreementText(HTMLParser):

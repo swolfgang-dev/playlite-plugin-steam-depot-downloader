@@ -16,6 +16,75 @@ class UnifiedVMFlowTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app=QApplication.instance() or QApplication([])
 
+    def test_slow_launch_shuts_down_on_running_and_leaves_vm_off_after_exit(self):
+        from PyQt6.QtCore import QObject, pyqtSignal
+        from types import SimpleNamespace
+        class Detection(QObject):
+            changed=pyqtSignal(str,str)
+        detection=Detection()
+        with tempfile.TemporaryDirectory() as directory:
+            profile=Path(directory);(profile/'vm.json').write_text('{}')
+            network=Mock(is_vm=True,profile=profile)
+            network.download_queue=None
+            network._idle_watcher=Mock()
+            plugin=Plugin.__new__(Plugin);plugin.network=network;plugin.busy=False;plugin.jobs=set()
+            settings=Mock();settings.value.return_value=str(profile)
+            window=SimpleNamespace(game_detection=detection,statusBar=Mock(return_value=Mock()))
+            with patch.object(plugin,'settings',return_value=settings):
+                plugin.before_launch(window,{'Id':'one'})
+                network._idle_watcher.check.assert_not_called()
+                detection.changed.emit('one','Launching')
+                network.resume.assert_not_called()
+                detection.changed.emit('one','Running')
+                network._idle_watcher.check.assert_called_once()
+                plugin.before_launch(window,{'Id':'two'})
+                detection.changed.emit('two','Running')
+                detection.changed.emit('one','Stopped')
+                network.resume.assert_not_called()
+                detection.changed.emit('two','Stopped')
+                network.resume.assert_not_called()
+                plugin.before_launch(window,{'Id':'three'})
+                network.download_queue=SimpleNamespace(entries=[SimpleNamespace(state='Downloading')])
+                detection.changed.emit('three','Running')
+                network._idle_watcher.check.assert_called_once()
+                detection.changed.emit('three','Stopped')
+                network.resume.assert_not_called()
+
+    def test_idle_watcher_shuts_down_only_without_guest_work_or_recent_use(self):
+        from downloader.vpn_lifecycle import VMIdleWatcher
+        from PyQt6.QtCore import QObject
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            profile=Path(directory);(profile/'vm.json').write_text('{}')
+            network=Mock(is_vm=True,profile=profile,cfg={'domain':'test'})
+            network.download_queue=None
+            parent=QObject();watcher=VMIdleWatcher(network,parent);watcher.timer.stop()
+            agent=Mock();agent.rpc.return_value={'busy':True}
+            pool=SimpleNamespace(start=lambda job:job.run())
+            installer=Mock();installer.execute.return_value=Mock(stdout='running')
+            with patch('downloader.plugin.QThreadPool.globalInstance',return_value=pool),patch('downloader.vm_backend.Agent',return_value=agent),patch('downloader.vm_backend.installer_module',return_value=installer):
+                watcher.check();self.app.processEvents()
+                network.close_session_background.assert_not_called()
+                agent.rpc.return_value={'busy':False}
+                (profile/'last-use').touch()
+                watcher.check();self.app.processEvents()
+                network.close_session_background.assert_not_called()
+                (profile/'last-use').unlink()
+                watcher.check();self.app.processEvents()
+                network.close_session_background.assert_called_once()
+                self.assertIs(agent.track_activity,False)
+                network.download_queue=SimpleNamespace(entries=[SimpleNamespace(state='Downloading')])
+                watcher.check();self.app.processEvents()
+                network.close_session_background.assert_called_once()
+
+    def test_restoring_an_idle_queue_does_not_boot_vm(self):
+        from types import SimpleNamespace
+        plugin=Plugin.__new__(Plugin);plugin.network=Mock(is_vm=True);plugin.jobs=set()
+        with patch('downloader.vpn_lifecycle.watch_queue'):
+            plugin.restore_downloads(Mock(),SimpleNamespace(entries=[]))
+        plugin.network.connect.assert_not_called()
+        self.assertFalse(plugin.jobs)
+
     def test_fresh_plugin_defaults_to_vm_and_one_menu_entry(self):
         cached=getattr(self.app,'_playlite_depot_network',None)
         try:

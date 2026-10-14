@@ -81,18 +81,26 @@ class Plugin(GenericPlugin):
             if self.settings().value('vm_ready_profile','')!=str(self.network.profile):return True
             if not hasattr(self,'session_games'):
                 self.session_games=set()
+                self.pending_session_games=set()
                 def changed(identity,state):
-                    if state=='Stopped':
+                    if state=='Running' and identity in self.pending_session_games:
+                        self.pending_session_games.discard(identity)
+                        first_game=not self.session_games
+                        self.session_games.add(identity)
+                        if first_game and not self.busy and not self.jobs and not has_downloads(self.network):
+                            try:
+                                from .vpn_lifecycle import disconnect_when_idle
+                                disconnect_when_idle(self.network)
+                                window.statusBar().showMessage('Checking Steam VM activity before idle shutdown…',8000)
+                            except RuntimeError as error:
+                                window.statusBar().showMessage('Steam VM shutdown failed: '+str(error),15000)
+                    elif state=='Stopped':
+                        self.pending_session_games.discard(identity)
                         self.session_games.discard(identity)
-                        if not self.session_games:self.network.resume()
                 window.game_detection.changed.connect(changed)
-            self.session_games.add(game['Id'])
-            self.network.suspend()
-            def failed_launch():
-                if window.game_detection.status(game['Id'])=='Stopped':
-                    self.session_games.discard(game['Id'])
-                    if not self.session_games:self.network.resume()
-            QTimer.singleShot(2000,failed_launch)
+            # Shut down only once the detector sees the game; leave it off
+            # until another downloader operation explicitly starts it.
+            self.pending_session_games.add(game['Id'])
             return True
         from .vpn_lifecycle import disconnect_when_idle
         # Active jobs include setup and authentication; they must finish before
@@ -117,18 +125,6 @@ class Plugin(GenericPlugin):
         from .steam_queue_runner import SteamQueueRunner
         from .vpn_lifecycle import watch_queue
         watch_queue(self.network,queue)
-        if getattr(self.network,'is_vm',False) is True and (self.network.profile/'vm.json').exists() and self.settings().value('vm_ready_profile','')==str(self.network.profile):
-            from .settings import Preferences
-            from .steam_runtime import start_with_vpn
-            def start_session():
-                settings=self.settings()
-                self.network.cancelled.clear()
-                self.network.connect(Preferences(settings.value('country',''),settings.value('protocol','tcp')))
-                start_with_vpn(self.network)
-                return 'Steam VM session ready.'
-            job=Job(start_session);self.jobs.add(job)
-            job.signals.finished.connect(lambda message:self.jobs.discard(job))
-            QThreadPool.globalInstance().start(job)
         for row in queue.entries:
             if row.metadata.get('backend')!='isolated_steam':continue
             snapshot=row.metadata.get('snapshot',{})

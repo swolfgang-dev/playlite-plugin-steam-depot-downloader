@@ -19,7 +19,9 @@ def prepare_vm(network, progress):
         shared.mkdir(parents=True, exist_ok=True)
         progress('Creating Steam VM. Initial installation may take several minutes…')
         installer.install(installer.configuration(network.profile, shared), start=False)
-    network.boot(progress, desktop=False)
+    # Cloud images install qemu-guest-agent during first-boot provisioning.
+    # The normal boot deadline is too short for that initial package download.
+    network.boot(progress, desktop=False, timeout=1200)
     # Wait for first-boot package setup before modifying the installed bridge.
     deadline = time.monotonic() + 1200
     while True:

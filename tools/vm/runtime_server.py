@@ -135,9 +135,34 @@ def setup_user():
         setup_phase='Setup needs attention'
 
 
+def idle_status():
+    if setup_thread is not None and setup_thread.is_alive():
+        return {'busy':True,'reason':'VM setup'}
+    for process in Path('/proc').iterdir():
+        if not process.name.isdecimal():continue
+        try:
+            args=(process/'cmdline').read_bytes().decode(errors='replace').split('\0')
+        except OSError:continue
+        if any(arg.endswith('/autocrack_worker.py') for arg in args) and 'work' in args:
+            return {'busy':True,'reason':'SteamAutoCrack'}
+    libraries={LIBRARY}
+    folders=LIBRARY/'steamapps/libraryfolders.vdf'
+    if folders.exists():
+        for row in bridge.parse_vdf(folders.read_text()).get('libraryfolders',{}).values():
+            if isinstance(row,dict) and row.get('path'):libraries.add(Path(row['path']))
+    for library in libraries:
+        for manifest in (library/'steamapps').glob('appmanifest_*.acf'):
+            state=bridge.parse_vdf(manifest.read_text()).get('AppState',{})
+            flags=int(state.get('StateFlags',0))
+            if not flags&512 and flags&(256|1024|2048|131072|524288|4194304|33554432):
+                return {'busy':True,'reason':'Steam download or verification'}
+    return {'busy':False}
+
+
 def dispatch(request):
     global last_verified,setup_thread,setup_error,setup_phase
     command = request.get('command')
+    if command == 'idle_status':return idle_status()
     if command == 'vpn_check':
         return vpn_check()
     if command == 'http':

@@ -70,14 +70,19 @@ Playlite records Steam's actual installation path. Workshop content is shared
 at `<shared>/Workshop/<AppID>/<ItemID>/`. Uninstalling a game removes its shared
 files; removing the plugin retains the VM and games.
 
-After setup is verified, the VM, Steam and NordVPN remain active for the whole
-Playlite session. Closing download/settings windows does not disconnect them.
-Before launching a game, Playlite pauses the VM if no downloads or setup jobs
-are active; game detection resumes it when the game stops or launch fails.
-Pausing stops guest execution but retains its RAM. Opening the downloader or
-starting a download can resume it earlier. On normal Playlite exit the guest
-Steam/VPN disconnect, and the VM shuts down normally. Active downloads
-or setup jobs retain the running VM. The next session boots the existing VM disk.
+After setup is verified, opening the downloader starts or resumes its VM,
+Steam and NordVPN. Closing a download/settings window does not interrupt active
+work. When no downloads, setup, or guest jobs remain and the VM has not been used
+for a minute, Playlite shuts it down to release resources. Starting a download or
+opening setup starts it again. A running game does not keep an otherwise idle VM
+alive. On normal Playlite exit the guest Steam/VPN disconnect and the VM shuts
+down; active downloads or setup jobs retain the running VM.
+
+First-boot setup allows up to 20 minutes for the guest agent to become available.
+The VM owns its user data directories correctly and starts its SPICE clipboard
+agent in the desktop user's session. Its console uses `qemu:///session`; the
+system libvirt connection is separate. Steam platform selection works with
+clients that no longer expose the compatibility-tool listing API.
 
 The wizard saves its progress and errors to
 `$XDG_STATE_HOME/playlite/steam-vm-setup.log` (normally

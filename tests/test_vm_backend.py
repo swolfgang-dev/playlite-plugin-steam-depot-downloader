@@ -25,6 +25,18 @@ class VMBackendTests(unittest.TestCase):
             disconnect.assert_not_called()
             self.assertTrue(network.cancelled.is_set())
 
+    def test_first_boot_allows_agent_to_appear_after_normal_deadline(self):
+        network=VMNetwork('/tmp/first-boot-test')
+        agent=Mock()
+        agent.call.side_effect=[RuntimeError('unavailable'), RuntimeError('unavailable'), {}]
+        with patch.object(VMNetwork,'cfg',new_callable=PropertyMock,return_value={'domain':'test'}), \
+             patch.object(VMNetwork,'agent',new_callable=PropertyMock,return_value=agent), \
+             patch.object(network,'resume'), patch('downloader.vm_backend.installer_module'), \
+             patch('downloader.vm_backend.time.monotonic',side_effect=[0,181,300]), \
+             patch('downloader.vm_backend.time.sleep'):
+            network.boot(timeout=1200)
+        self.assertEqual(agent.call.call_count,3)
+
     def test_closing_settings_keeps_vm_vpn_connected(self):
         from downloader.vpn_lifecycle import disconnect_when_idle
         with tempfile.TemporaryDirectory() as folder:

@@ -138,6 +138,22 @@ class VPNGateTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'kill switch'):
                 guest.vpn_ready()
 
+    def test_dnssec_failure_recovers_only_tunnel_dns_then_verifies_protection(self):
+        responses = [Mock(stdout='Status: Connected', returncode=0), Mock(stdout='Kill Switch: enabled'),
+                     Mock(returncode=6), Mock(stderr='DNSSEC validation failed: missing-key'),
+                     Mock(returncode=0), Mock(returncode=0), Mock(returncode=0, stdout='{"protected":true}')]
+        with patch.object(guest, 'run', side_effect=responses) as run:
+            guest.vpn_ready()
+        self.assertEqual(run.call_args_list[4].args[0], ['sudo', '-n', '/usr/bin/resolvectl', 'dnssec', 'nordtun', 'no'])
+        self.assertEqual(run.call_args_list[-1].args[0][0], 'curl')
+
+    def test_ordinary_dns_failure_is_reported_without_changing_settings(self):
+        with patch.object(guest, 'run', side_effect=[Mock(stdout='Status: Connected'), Mock(stdout='Kill Switch: enabled'),
+             Mock(returncode=6), Mock(stderr='DNS server unavailable')]) as run:
+            with self.assertRaisesRegex(RuntimeError, 'DNS resolution failed'):
+                guest.vpn_ready()
+        self.assertEqual(run.call_count, 4)
+
     def test_unprotected_connection_is_rejected(self):
         with patch.object(guest, 'run', side_effect=[Mock(stdout='Status: Connected'),
              Mock(stdout='Kill Switch: enabled'), Mock(returncode=0, stdout='{"protected":false}')]):

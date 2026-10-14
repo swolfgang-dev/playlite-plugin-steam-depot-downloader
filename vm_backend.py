@@ -56,6 +56,10 @@ class Agent:
         self.cfg = cfg
 
     def call(self, payload):
+        if getattr(self,'track_activity',True) and self.cfg.get('root'):
+            marker=Path(self.cfg['root'])/'last-use'
+            try:marker.touch(mode=0o600)
+            except OSError:pass
         # libvirt receives JSON on stdin, keeping provider tokens and oversized
         # installer assets out of process arguments and shell command strings.
         script = "import libvirt,libvirt_qemu,sys; c=libvirt.open('qemu:///session'); d=c.lookupByName(sys.argv[1]); print(libvirt_qemu.qemuAgentCommand(d,sys.stdin.read(),15,0))"
@@ -101,8 +105,12 @@ class Agent:
             self.call({'execute':'guest-file-close','arguments':{'handle':handle}})
 
     def rpc(self, request):
-        code, output, _ = self.execute(['/usr/bin/python3', GUEST + '/rpc.py'],
-                                       json.dumps(request).encode(), timeout=200)
+        activity=getattr(self,'track_activity',True)
+        if request.get('command') in ('status','idle_status'):self.track_activity=False
+        try:
+            code, output, _ = self.execute(['/usr/bin/python3', GUEST + '/rpc.py'],
+                                           json.dumps(request).encode(), timeout=200)
+        finally:self.track_activity=activity
         try:
             envelope = json.loads(output)
         except ValueError:
@@ -157,12 +165,12 @@ class VMNetwork:
     def cancel(self):
         self.cancelled.set()
 
-    def boot(self, progress=lambda text: None, desktop=False):
+    def boot(self, progress=lambda text: None, desktop=False, timeout=180):
         cfg = self.cfg
         self.resume()
         progress('Starting the Steam VM…')
         installer_module().open_vm(cfg, desktop=desktop)
-        deadline = time.monotonic() + 180
+        deadline = time.monotonic() + timeout
         while True:
             self.check_cancelled()
             try:

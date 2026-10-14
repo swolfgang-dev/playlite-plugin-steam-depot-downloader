@@ -18,6 +18,7 @@ mkdir -p /etc/lightdm/lightdm.conf.d
 printf '[Seat:*]\nautologin-user=ubuntu\nautologin-user-timeout=0\nuser-session=xfce\n' \
   > /etc/lightdm/lightdm.conf.d/50-playlite-vm.conf
 systemctl enable --now qemu-guest-agent
+systemctl start spice-vdagentd.service
 python3 /usr/local/lib/playlite-vm/setup-runtime.py
 bash /usr/local/lib/playlite-vm/install-steam-auto-crack.sh
 runuser -u ubuntu -- python3 /usr/local/lib/playlite-vm/prepare-storage.py

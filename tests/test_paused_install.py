@@ -25,11 +25,11 @@ class PausedInstallTests(unittest.TestCase):
     def test_native_retry_cancels_only_selected_app_then_requeues_before_resume(self):
         source=(ROOT/'tools/steam/steam_control.lua').read_text()
         expression=source.split("json.encode(request)..[[;",1)[1].split('})()]]',1)[0]
-        for paused in (False,True):
+        for paused, available_api in ((False,True),(True,True),(False,False)):
             request={'appid':10,'action':'install','platform':'windows','language':'english','dlc':[],'restart_paused':paused}
             js='''const calls=[];const action=name=>async(...args)=>calls.push([name,...args]);
 const SteamClient={Apps:{GetAvailableCompatTools:async()=>[{strToolName:'proton_experimental'}],SpecifyCompatTool:action('platform'),SetAppCurrentLanguage:action('language')},Downloads:{RemoveFromDownloadList:action('remove'),QueueAppUpdate:action('queue'),EnableAllDownloads:action('enable'),ResumeAppUpdate:action('resume')},InstallFolder:{GetInstallFolders:async()=>[{strFolderPath:'/library',bIsMounted:true,nFolderIndex:1,vecApps:[{nAppID:10}]}]}};
-'''+ '(async()=>{const r='+json.dumps(request)+';'+expression+'})().then(result=>console.log(JSON.stringify({result,calls})));'
+'''+ ('delete SteamClient.Apps.GetAvailableCompatTools;\n' if not available_api else '')+ '(async()=>{const r='+json.dumps(request)+';'+expression+'})().then(result=>console.log(JSON.stringify({result,calls})));'
             result=json.loads(subprocess.run(['node','-e',js],capture_output=True,text=True,check=True).stdout)
             self.assertTrue(result['result']['requested'])
             for call in result['calls']:

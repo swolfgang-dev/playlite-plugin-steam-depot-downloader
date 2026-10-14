@@ -102,9 +102,16 @@ if(r.restart_paused){
  stage='cancel paused download';
  await SteamClient.Downloads.RemoveFromDownloadList(r.appid,'0');
 }
-const tools=await SteamClient.Apps.GetAvailableCompatTools(r.appid);
 const tool=r.platform==='windows'?'proton_experimental':'';
-if(tool&&!tools.some(t=>t.strToolName===tool))throw Error('Windows compatibility is unavailable');
+if(tool && typeof SteamClient.Apps.GetAvailableCompatTools === 'function'){
+ let available=false,lastError=null;
+ for(let attempt=0;attempt<40;attempt++){
+  try{const tools=await SteamClient.Apps.GetAvailableCompatTools(r.appid);available=Array.isArray(tools)&&tools.some(t=>t.strToolName===tool);}catch(e){lastError=e;}
+  if(available)break;
+  if(attempt<39)await new Promise(resolve=>setTimeout(resolve,500));
+ }
+ if(!available)throw Error('Windows compatibility is unavailable'+(lastError?': '+String(lastError):' (Proton Experimental was not listed by Steam)'));
+}
 await SteamClient.Apps.SpecifyCompatTool(r.appid,tool);
 stage='language';
 await SteamClient.Apps.SetAppCurrentLanguage(r.appid,r.language);
@@ -128,8 +135,8 @@ else{
  await SteamClient.Installs.ContinueInstall();
 }
 return {requested:true,platform:r.platform,compatibility_tool:tool,restarted_paused:r.restart_paused};
-}catch(e){return {requested:false,failed_stage:stage};}
+}catch(e){return {requested:false,failed_stage:stage,error:String(e).slice(0,500)};}
 })()]]
-local result, failure = cdpreq.evaluate(port,shared,expression,5,true)
+local result, failure = cdpreq.evaluate(port,shared,expression,25,true)
 assert(result, failure or 'Steam rejected the install request')
 print('PLAYLITE_STEAM_RESULT '..json.encode(result))

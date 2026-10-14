@@ -40,9 +40,26 @@ def vpn_ready(connect=False):
     settings = run(['nordvpn', 'settings']).stdout.lower()
     if 'kill switch: enabled' not in settings:
         raise RuntimeError('Use Configure NordVPN first to enable the kill switch.')
-    response = run(['curl', '--fail', '--silent', '--show-error', '--max-time', '15',
-                    'https://api.nordvpn.com/v1/helpers/ips/insights'], 20)
-    if response.returncode or not json.loads(response.stdout).get('protected'):
+    query = ['curl', '--fail', '--silent', '--show-error', '--max-time', '15',
+             'https://api.nordvpn.com/v1/helpers/ips/insights']
+    response = run(query, 20)
+    if response.returncode == 6:
+        diagnosis = run(['resolvectl', 'query', 'api.nordvpn.com'], 20)
+        if 'DNSSEC validation failed' in diagnosis.stderr:
+            # Nord's tunnel resolver can reject DNSKEY queries. Limit recovery
+            # to its interface; retain the tunnel, kill switch and HTTPS check.
+            interface = 'nordlynx' if 'technology: nordlynx' in state.lower() else 'nordtun'
+            repaired = run(['sudo', '-n', '/usr/bin/resolvectl', 'dnssec', interface, 'no'])
+            if repaired.returncode == 0:
+                run(['sudo', '-n', '/usr/bin/resolvectl', 'flush-caches'])
+                response = run(query, 20)
+        if response.returncode == 6:
+            raise RuntimeError('NordVPN is connected, but DNS resolution failed in the VM. Steam was not started.')
+    try:
+        protected = response.returncode == 0 and json.loads(response.stdout).get('protected') is True
+    except (ValueError, AttributeError):
+        protected = False
+    if not protected:
         raise RuntimeError('VPN protection could not be verified; Steam was not started.')
 
 

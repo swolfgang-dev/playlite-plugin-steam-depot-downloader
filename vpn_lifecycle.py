@@ -46,7 +46,9 @@ def has_downloads(network):
 
 def disconnect_when_idle(network,release_session=False):
     if getattr(network,'is_vm',False) is True:
-        return  # VM, Steam and VPN belong to the whole Playlite session.
+        watcher=vars(network).get('_idle_watcher')
+        if watcher is not None:watcher.check()
+        return
     if has_downloads(network) or has_open_windows(network):
         network.disconnect_pending=True
         queue=vars(network).get('download_queue')
@@ -89,6 +91,8 @@ def disconnect_when_idle(network,release_session=False):
 
 def watch_queue(network,queue):
     network.download_queue=queue
+    if getattr(network,'is_vm',False) is True and vars(network).get('_idle_watcher') is None:
+        network._idle_watcher=VMIdleWatcher(network,queue)
     if vars(network).get('_watched_queue') is queue:return
     old=vars(network).get('_watched_queue')
     if old is not None:
@@ -104,3 +108,41 @@ def watch_queue(network,queue):
             disconnect_when_idle(network)
     network._queue_changed=changed
     queue.changed.connect(changed)
+
+
+class VMIdleWatcher(QObject):
+    """Release an idle VM without booting it or blocking the library UI."""
+    def __init__(self,network,queue):
+        super().__init__(queue)
+        self.network=network
+        self.job=None
+        self.timer=QTimer(self)
+        self.timer.setInterval(15000)
+        self.timer.timeout.connect(self.check)
+        self.timer.start()
+
+    def check(self):
+        if self.job is not None or has_downloads(self.network):return
+        app=QApplication.instance()
+        if app and any(getattr(widget,'network',None) is self.network and
+                       (getattr(widget,'busy',False) or getattr(widget,'jobs',None)) for widget in app.allWidgets()):return
+        from .plugin import Job
+        from .vm_backend import Agent,installer_module
+        import time
+        def work():
+            if not (self.network.profile/'vm.json').exists():return 'VM is not installed'
+            marker=self.network.profile/'last-use'
+            if marker.exists() and time.time()-marker.stat().st_mtime<60:return 'VM recently used'
+            cfg=self.network.cfg
+            state=installer_module().execute(['virsh','-c','qemu:///session','domstate',cfg['domain']]).stdout.strip()
+            if state!='running':return 'VM is off'
+            agent=Agent(cfg);agent.track_activity=False
+            if agent.rpc({'command':'idle_status'}).get('busy') is not False:return 'VM has active work'
+            if has_downloads(self.network) or marker.exists() and time.time()-marker.stat().st_mtime<60:return 'VM recently used'
+            self.network.close_session_background()
+            return 'Idle Steam VM shutdown requested'
+        job=Job(work);self.job=job
+        def done(_):
+            QTimer.singleShot(0,lambda:setattr(self,'job',None))
+        job.signals.finished.connect(done)
+        QThreadPool.globalInstance().start(job)
