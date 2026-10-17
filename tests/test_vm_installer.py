@@ -7,6 +7,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock, patch
 import xml.etree.ElementTree as ET
+import test_worker  # Load the checkout package for focused test runs.
 
 
 def load_script(name, filename):
@@ -22,6 +23,40 @@ guest = load_script('vm_guest', 'guest_control.py')
 
 
 class VMInstallerTests(unittest.TestCase):
+    def test_cloud_checksum_handles_blank_lines_and_rejects_ambiguous_entries(self):
+        line = 'a' * 64 + '  ' + installer.IMAGE
+        self.assertEqual(installer.image_checksum('\n' + line + '\n\n'), 'a' * 64)
+        for text in ('', line + '\n' + line, 'bad  ' + installer.IMAGE):
+            with self.assertRaisesRegex(RuntimeError, 'one valid checksum'):
+                installer.image_checksum(text)
+
+    def test_existing_empty_and_interrupted_profile_directories_can_be_installed(self):
+        import hashlib
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted), tempfile.TemporaryDirectory() as temporary:
+                parent = Path(temporary)
+                shared = parent / 'games'; shared.mkdir()
+                with patch.object(installer, 'shared_mount', return_value={'target': '/', 'fstype': 'test'}):
+                    cfg = installer.configuration(parent / 'userdata', shared)
+                root = Path(cfg['root']); root.mkdir()
+                if interrupted:
+                    (root / 'installing.json').write_text(json.dumps(cfg))
+                def download(url, target):
+                    target.write_bytes((hashlib.sha256(b'image').hexdigest() + '  ' + installer.IMAGE + '\n').encode()
+                                       if url.endswith('SHA256SUMS') else b'image')
+                with patch.object(installer.os, 'getuid', return_value=1000), \
+                        patch.object(installer.os, 'access', return_value=True), \
+                        patch.object(installer.shutil, 'which', return_value='/fake/tool'), \
+                        patch.object(installer, 'subordinate_id', return_value=100000), \
+                        patch.object(installer.subprocess, 'run', return_value=Mock(returncode=1)), \
+                        patch.object(installer, 'ensure_daemon', return_value=Path('/fake/virtiofsd')), \
+                        patch.object(installer, 'execute'), patch.object(installer, 'register_service'), \
+                        patch.object(installer, 'write_launcher'), patch.object(installer, 'cloud_config', return_value={}), \
+                        patch.object(installer, 'download', side_effect=download):
+                    installer.install(cfg, start=False)
+                self.assertTrue((root / 'vm.json').is_file())
+                self.assertFalse((root / 'installing.json').exists())
+
     def test_service_registration_links_profile_unit_to_user_manager(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)

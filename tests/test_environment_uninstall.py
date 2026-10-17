@@ -10,6 +10,19 @@ from downloader.environment_uninstall import remove_environment
 
 
 class EnvironmentRemovalTests(unittest.TestCase):
+    def test_invalid_receipt_is_rejected_before_any_container_or_file_removal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            library = root / 'library'; library.mkdir()
+            (root / 'environment-owner.json').write_text(json.dumps({'owner': OWNER, 'directories': ['library', 'unexpected']}))
+            with patch('downloader.environment_uninstall.SteamRuntime', return_value=Mock(root=root)), \
+                    patch('downloader.environment_uninstall.subprocess.run') as run, \
+                    patch('downloader.vpn_lifecycle.has_downloads', return_value=False):
+                with self.assertRaisesRegex(RuntimeError, 'nothing was removed'):
+                    remove_environment(Mock(), True)
+            run.assert_not_called()
+            self.assertTrue(library.is_dir())
+
     def test_only_owned_containers_images_and_volumes_are_removed(self):
         calls=[]
         network=Mock();network.name='gateway-name';network.container='gateway';

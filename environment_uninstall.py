@@ -14,6 +14,13 @@ def remove_environment(network,delete_data=False,progress=lambda message:None,al
     if has_downloads(network):raise RuntimeError('Pause or cancel downloads before removing Steam.')
     runtime=SteamRuntime(network)
     if delete_data and runtime.root.is_symlink():raise RuntimeError('Refusing an externally linked Steam data directory.')
+    marker = runtime.root / 'environment-owner.json'
+    document = None
+    if delete_data and marker.is_file() and not marker.is_symlink():
+        document = json.loads(marker.read_text())
+        if (not isinstance(document, dict) or not isinstance(document.get('directories'), list)
+                or any(name not in ('control', 'library') for name in document['directories'])):
+            raise RuntimeError('Invalid Steam ownership receipt; nothing was removed.')
     def docker(*args):
         result=subprocess.run(['docker',*args],capture_output=True,text=True,timeout=60)
         if result.returncode:raise RuntimeError('Docker cleanup failed for '+args[0]+'. Retry after checking Docker.')
@@ -46,9 +53,7 @@ def remove_environment(network,delete_data=False,progress=lambda message:None,al
             progress('Preserved resource without this installation’s ownership label: '+name);continue
         docker(kind,'rm',name);progress('Removed '+kind+': '+name)
     if delete_data:
-        marker=runtime.root/'environment-owner.json'
-        if marker.is_file() and not marker.is_symlink():
-            document=json.loads(marker.read_text())
+        if document is not None:
             if document.get('owner')==OWNER:
                 for name in document.get('directories',[]):
                     if name not in ('control','library'):raise RuntimeError('Invalid Steam ownership receipt.')

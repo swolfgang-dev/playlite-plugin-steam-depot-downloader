@@ -8,6 +8,19 @@ OWNER_LABEL = 'io.playlite.steam.owner'
 
 
 def cleanup(data, config, args, remove, run, docker_action, failures):
+    root = data / 'steam-runtime'
+    marker = root / 'environment-owner.json'
+    document = None
+    if args.purge_data and not root.is_symlink() and marker.is_file() and not marker.is_symlink():
+        try:
+            document = json.loads(marker.read_text())
+            if (not isinstance(document, dict) or document.get('owner') != str(os.getuid())
+                    or not isinstance(document.get('directories'), list)
+                    or any(name not in ('control', 'library') for name in document['directories'])):
+                raise ValueError('Invalid Steam data ownership receipt.')
+        except (OSError, ValueError):
+            failures.append('Invalid Steam data ownership receipt; resources were retained.')
+            return
     def owned_resource(kind,name):
         response=run(['docker',kind,'inspect',name])
         if response.returncode:return False
@@ -47,16 +60,14 @@ def cleanup(data, config, args, remove, run, docker_action, failures):
             docker_action(['volume','rm',volume])
     else:print('Docker not installed; no container cleanup performed.')
     if args.purge_data:
-        root=data/'steam-runtime'
-        marker=root/'environment-owner.json'
         if root.is_symlink():
             print('Retain external Steam directory link:',root)
-        elif marker.is_file() and not marker.is_symlink():
-            document=json.loads(marker.read_text())
+        elif document is not None:
             names=document.get('directories',[])
             if document.get('owner')!=str(os.getuid()) or any(name not in ('control','library') for name in names):
                 failures.append('Invalid Steam data ownership receipt.')
             else:
+                cleanup_failed = False
                 for name in names:
                     path=root/name
                     if args.dry_run:
@@ -71,9 +82,14 @@ def cleanup(data, config, args, remove, run, docker_action, failures):
                                     '--mount',f'type=bind,src={path},dst=/cleanup','--entrypoint','python3','playlite-steam-runtime:test',
                                     '-B','-c',"import pathlib,shutil; root=pathlib.Path('/cleanup'); [p.unlink() if p.is_symlink() or p.is_file() else shutil.rmtree(p) for p in root.iterdir()]"])
                                 try:path.rmdir()
-                                except OSError as error:failures.append(str(error))
-                            else:failures.append('Private Steam data needs permission cleanup: '+str(path))
-                remove(marker)
+                                except OSError as error:
+                                    cleanup_failed = True
+                                    failures.append(str(error))
+                            else:
+                                cleanup_failed = True
+                                failures.append('Private Steam data needs permission cleanup: '+str(path))
+                if not cleanup_failed:
+                    remove(marker)
                 if not args.dry_run:
                     try:root.rmdir()
                     except OSError:pass

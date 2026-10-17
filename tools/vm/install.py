@@ -248,6 +248,14 @@ def download(url, destination):
     partial.replace(destination)
 
 
+def image_checksum(text):
+    matches = [parts[0] for line in text.splitlines() if len(parts := line.split()) == 2
+               and parts[1].lstrip('*') == IMAGE]
+    if len(matches) != 1 or not re.fullmatch(r'[a-fA-F0-9]{64}', matches[0]):
+        raise RuntimeError('Ubuntu checksum manifest must contain one valid checksum for the selected cloud image.')
+    return matches[0].lower()
+
+
 def ensure_daemon(root):
     for binary in (Path('/usr/libexec/virtiofsd'), Path('/usr/lib/qemu/virtiofsd')):
         if binary.is_file():
@@ -311,17 +319,14 @@ def install(cfg, start=True):
     identity = getpass.getuser()
     subuid = subordinate_id('/etc/subuid', identity)
     subgid = subordinate_id('/etc/subgid', identity)
-    root.mkdir(parents=True, mode=0o700); root.chmod(0o700)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True); root.chmod(0o700)
     pending.write_text(json.dumps(cfg, indent=2)); pending.chmod(0o600)
     binary = ensure_daemon(root)
     base = root / 'ubuntu-base.qcow2'
     sums = root / 'image-SHA256SUMS'
     if not sums.exists():
         download(IMAGE_URL + 'SHA256SUMS', sums)
-    checksum = next((line.split()[0] for line in sums.read_text().splitlines()
-                     if line.split()[-1].lstrip('*') == IMAGE), None)
-    if not checksum:
-        raise RuntimeError('Ubuntu checksum manifest did not contain the selected cloud image.')
+    checksum = image_checksum(sums.read_text())
     if not base.exists():
         download(IMAGE_URL + IMAGE, base)
     digest = hashlib.sha256()

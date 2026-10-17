@@ -13,6 +13,21 @@ spec.loader.exec_module(cleanup)
 
 
 class ResourceCleanupTests(unittest.TestCase):
+    def test_failed_private_cleanup_retains_receipt_for_retry(self):
+        with TemporaryDirectory() as temporary, patch.object(cleanup.shutil, 'which', return_value=None):
+            data = Path(temporary)
+            root = data / 'steam-runtime'; root.mkdir()
+            (root / 'library').mkdir()
+            marker = root / 'environment-owner.json'
+            marker.write_text(json.dumps({'owner': str(os.getuid()), 'directories': ['library']}))
+            args = SimpleNamespace(purge_data=True, dry_run=False, purge_secrets=False, remove_resource_images=False)
+            removed = []; failures = []
+            with patch.object(cleanup.shutil, 'rmtree', side_effect=PermissionError('denied')):
+                cleanup.cleanup(data, data, args, removed.append, None, None, failures)
+            self.assertTrue(failures)
+            self.assertNotIn(marker, removed)
+            self.assertTrue(marker.exists())
+
     def test_only_receipted_private_folders_are_removed(self):
         with TemporaryDirectory() as temporary, patch.object(cleanup.shutil, 'which', return_value=None):
             data = Path(temporary)
