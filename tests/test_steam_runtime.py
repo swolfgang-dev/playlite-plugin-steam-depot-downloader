@@ -10,6 +10,27 @@ from downloader.steam_runtime import SteamRuntime,RUNTIME_IMAGE
 from downloader.constants import IMAGE,WORKER_LABEL
 
 class RuntimeTests(unittest.TestCase):
+    def test_start_never_removes_an_unowned_same_name_container(self):
+        network = Mock(container='gateway')
+        entry = {'Config': {'Labels': {}}, 'HostConfig': {'NetworkMode': 'bridge'}, 'State': {'Running': False}}
+        with tempfile.TemporaryDirectory() as temporary, patch('downloader.steam_runtime.subprocess.run', return_value=Mock(returncode=0, stdout=json.dumps([entry]))) as run:
+            with self.assertRaisesRegex(RuntimeError, 'Refusing to replace'):
+                SteamRuntime(network, Path(temporary)).start()
+        self.assertEqual(run.call_count, 1)
+
+    def test_retail_selection_forwards_package_ids_after_restart(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'control').mkdir()
+            client = Mock()
+            client.recv.return_value = b'{"ok":true,"result":{}}\n'
+            socket = Mock()
+            socket.__enter__ = Mock(return_value=client)
+            socket.__exit__ = Mock(return_value=False)
+            with patch('downloader.steam_runtime.socket.socket', return_value=socket):
+                SteamRuntime(Mock(), root).request('retail_selection', 42, packages=[10, 20])
+            self.assertEqual(json.loads(client.sendall.call_args.args[0])['packages'], [10, 20])
+
     def test_fresh_install_opens_native_wizard_but_existing_download_does_not(self):
         spec=importlib.util.spec_from_file_location('wizard_bridge',Path(__file__).resolve().parents[1]/'tools/steam/bridge.py')
         bridge=importlib.util.module_from_spec(spec);spec.loader.exec_module(bridge)

@@ -205,7 +205,7 @@ class VMNetwork:
     def check(self):
         self.resume()
         state = self.agent.rpc({'command': 'vpn_check'})
-        if state.get('connected') is not True:
+        if state.get('connected') is not True or state.get('protected') is not True:
             self.container = None
             raise RuntimeError('VM VPN is unavailable. Open the desktop and sign into NordVPN.')
         self.container = self.cfg['domain']

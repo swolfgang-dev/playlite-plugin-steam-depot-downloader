@@ -23,7 +23,8 @@ print(json.dumps([LABEL,network.name,runtime.name,runtime.volume,RUNTIME_IMAGE,F
         with tempfile.TemporaryDirectory() as home:
             values = []
             for profile in ('installed', 'repo'):
-                environment = dict(os.environ, PLAYLITE_PROFILE=profile, HOME=home+'/'+profile, PYTHONPATH=str(tests))
+                environment = dict(os.environ, PLAYLITE_PROFILE=profile, HOME=home+'/'+profile,
+                                   XDG_DATA_HOME=home+'/'+profile+'/data', PYTHONPATH=str(tests))
                 result = subprocess.run([sys.executable, '-c', code], env=environment, capture_output=True, text=True, check=True)
                 values.append(json.loads(result.stdout))
             for release, repo in zip(*values):

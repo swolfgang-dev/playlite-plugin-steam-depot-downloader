@@ -33,6 +33,28 @@ class DestinationTests(unittest.TestCase):
     def test_name_cannot_escape_download_root(self):
         self.assertEqual(game_folder('/downloads','../../Baba: Is You').parent,Path('/downloads'))
 
+    def test_non_io_promotion_failure_restores_completed_moves(self):
+        from unittest.mock import patch
+        from downloader import download_flow
+        with tempfile.TemporaryDirectory() as root:
+            destination, staging = prepare_destination(Path(root) / 'game')
+            (staging / 'first').write_bytes(b'one')
+            (staging / 'second').write_bytes(b'two')
+            original = download_flow.rename_without_overwrite
+            completed = []
+            def move(source, target):
+                if Path(source).parent == staging:
+                    if completed:
+                        raise ValueError('unexpected entry')
+                    completed.append(source)
+                return original(source, target)
+            with patch.object(download_flow, 'rename_without_overwrite', side_effect=move):
+                with self.assertRaisesRegex(ValueError, 'unexpected entry'):
+                    finalize_download(destination, staging)
+            self.assertEqual((staging / 'first').read_bytes(), b'one')
+            self.assertEqual((staging / 'second').read_bytes(), b'two')
+            self.assertEqual(list(destination.iterdir()), [staging])
+
 class FuseFinalizationTests(unittest.TestCase):
     def unsupported(self):
         from unittest.mock import patch

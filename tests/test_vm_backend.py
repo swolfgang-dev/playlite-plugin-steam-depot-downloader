@@ -15,6 +15,17 @@ from downloader.steam_queue_runner import ensure_vpn
 
 
 class VMBackendTests(unittest.TestCase):
+    def test_connected_without_verified_protection_blocks_downloads(self):
+        for state in ({'connected': True}, {'connected': True, 'protected': False}):
+            network = VMNetwork('/tmp/unused-profile')
+            network.container = 'previous-session'
+            agent = Mock()
+            agent.rpc.return_value = state
+            with patch.object(VMNetwork, 'agent', new_callable=PropertyMock, return_value=agent):
+                with self.assertRaisesRegex(RuntimeError, 'VPN is unavailable'):
+                    network.check()
+            self.assertIsNone(network.container)
+
     def test_plugin_shutdown_uses_vm_session_cleanup(self):
         from downloader.plugin import Plugin
         with tempfile.TemporaryDirectory() as folder:

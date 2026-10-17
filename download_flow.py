@@ -139,7 +139,7 @@ def finalize_download(destination, staging):
         for entry in entries:
             target=destination/entry.name
             rename_without_overwrite(entry,target);moved.append(target)
-    except OSError:
+    except Exception:
         for target in reversed(moved): rename_without_overwrite(target,staging/target.name)
         raise
     staging.rmdir()

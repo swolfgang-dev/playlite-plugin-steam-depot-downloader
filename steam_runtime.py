@@ -17,7 +17,7 @@ class SteamRuntime:
 
     def __init__(self,network,root=None):
         self.network=network
-        self.root=Path(root or Path.home()/'.local/share/playlite/steam-runtime')
+        self.root=Path(root or Path(os.environ.get('XDG_DATA_HOME', str(Path.home()/'.local/share')))/'playlite/steam-runtime')
         self.name=f'playlite-steam-runtime-{os.getuid()}'+PROFILE_SUFFIX
         self.volume=f'playlite-steam-home-{os.getuid()}'+PROFILE_SUFFIX
 
@@ -76,6 +76,10 @@ class SteamRuntime:
         result=subprocess.run(['docker','inspect',self.name],capture_output=True,text=True)
         if result.returncode==0:
             entry=json.loads(result.stdout)[0]
+            gateway = self.network.container
+            if (not gateway or entry['Config'].get('Labels', {}).get(WORKER_LABEL) != gateway
+                    or entry['HostConfig']['NetworkMode'] != 'container:' + gateway):
+                raise RuntimeError('Refusing to replace a Steam container outside this isolated VPN session.')
             if entry['State']['Running'] and entry['HostConfig']['NetworkMode']=='container:'+self.network.container:
                 return 'Isolated Steam environment is running.'
             subprocess.run(['docker','rm','-f',self.name],capture_output=True,check=True)
@@ -93,8 +97,11 @@ class SteamRuntime:
             raise RuntimeError('Could not start isolated Steam: '+(launched.stderr.strip() or 'Docker rejected the container launch.'))
         return 'Starting isolated Steam environment. Refresh status in a moment.'
 
-    def request(self,command,appid=None,*,platform=None,language='english',dlc=None,eula_id=None,eula_version=None,recover_paused=False):
+    def request(self,command,appid=None,*,platform=None,language='english',dlc=None,eula_id=None,eula_version=None,recover_paused=False,packages=None):
         if command not in ('authentication_status','start','status','stop','install_moon','add','add_status','cancel_add','install','download_status','pause','eula_status','eula_accept','installed_games','uninstall','retail_selection','has_game','finish_export'):raise ValueError('Unknown runtime action.')
+        if command == 'retail_selection' and packages is not None:
+            if not isinstance(packages, list) or len(packages) > 64 or any(type(value) is not int or not 0 < value < 2**32 for value in packages):
+                raise ValueError('Invalid Steam package selection.')
         if command=='install' and platform not in ('windows','linux'):
             raise ValueError('Select Windows or Linux for isolated Steam. macOS is unavailable.')
         if command in ('authentication_status','start','install_moon','add','install','eula_status','eula_accept','installed_games','uninstall','retail_selection','has_game'):self.network.check()
@@ -108,6 +115,8 @@ class SteamRuntime:
                 connection.connect(f'/proc/self/fd/{directory}/bridge.sock')
             finally:os.close(directory)
             payload={'command':command,'appid':appid}
+            if command == 'retail_selection' and packages is not None:
+                payload['packages'] = packages
             if command=='eula_accept':payload.update(eula_id=eula_id,eula_version=eula_version)
             if command=='install':payload.update(platform=platform,language=language,dlc=dlc or [],recover_paused=recover_paused)
             connection.sendall(json.dumps(payload).encode()+b'\n')
