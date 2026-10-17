@@ -15,6 +15,7 @@ from .moon import Moon
 from .credentials import MoonSessionWallet, SteamSessionWallet, HubcapKeyWallet
 from .providers import SOURCES, Transport, prepare_depot
 from .worker import Request, worker_args, require_download_success
+from playlite.ui_layout import insert_form_row_after
 
 class DownloadDialog(QDialog):
     def __init__(self, network, parent=None, authentication=False):
@@ -215,7 +216,7 @@ class DownloadDialog(QDialog):
             self.steam_status.setMinimumHeight(self.steam_status.fontMetrics().lineSpacing())
             connection_status=QVBoxLayout();connection_status.setSpacing(6)
             connection_status.addLayout(vpn_line);connection_status.addWidget(self.steam_status)
-            form.insertRow(1,connection_status)
+            insert_form_row_after(form,notice,connection_status)
             self.steam_status_job=None
             self.steam_status_timer=QTimer(self);self.steam_status_timer.setInterval(5000)
             self.steam_status_timer.timeout.connect(self.refresh_steam_status)
@@ -225,7 +226,7 @@ class DownloadDialog(QDialog):
             self.game_title.setWordWrap(True)
             card = QHBoxLayout(); card.setSpacing(14)
             card.addWidget(self.game_cover); card.addWidget(self.game_title,1)
-            form.insertRow(4,card)
+            insert_form_row_after(form,self.search_results,card)
             label = form.labelForField(self.depot)
             if label: label.setText('Platform')
             self.dlc_list = QListWidget()
