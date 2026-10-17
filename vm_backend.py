@@ -309,8 +309,15 @@ except Exception as error:
                  self.profile / (cfg['service'] + '.service')]
         if cfg.get('download_storage'):
             paths.append(self.profile / (cfg['service'] + '-downloads.service'))
+        if any(path.is_symlink() for path in paths):
+            raise RuntimeError('VM profile configuration files cannot be symlinks.')
         previous = {path: (path.read_bytes(), path.stat().st_mode & 0o777)
                     if path.exists() else (None, 0o600) for path in paths}
+        expected = {self.profile / 'virtiofs.service': text.encode(),
+                    self.profile / (cfg['service'] + '.service'): text.encode(),
+                    self.profile / 'vm.json': json.dumps(cfg, indent=2, ensure_ascii=False).encode()}
+        if cfg.get('download_storage'):
+            expected[self.profile / (cfg['service'] + '-downloads.service')] = (self.profile / 'virtiofs-downloads.service').read_bytes()
         state=installer.execute(['virsh','-c','qemu:///session','domstate',cfg['domain']]).stdout.strip()
         restart=state in ('running','paused')
         if restart:
@@ -329,9 +336,16 @@ except Exception as error:
         except Exception as error:
             self.container=None
             try:
+                conflicts = []
                 for path, (content, mode) in previous.items():
+                    current = path.read_bytes() if path.exists() and not path.is_symlink() else None
+                    if path.is_symlink() or current not in (content, expected[path]):
+                        conflicts.append(path.name)
+                        continue
                     if content is None:path.unlink(missing_ok=True)
                     else:atomic_bytes(path, content, mode=mode)
+                if conflicts:
+                    raise RuntimeError('Concurrent changes were retained in: ' + ', '.join(conflicts))
                 installer.execute(['systemctl','--user','daemon-reload'])
                 if restart:self.boot()
             except Exception as recovery:

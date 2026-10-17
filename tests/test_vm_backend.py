@@ -77,6 +77,12 @@ class VMBackendTests(unittest.TestCase):
 
 
     def test_shared_folder_registration_failure_restores_profile_files(self):
+        self.check_folder_failure(False)
+
+    def test_shared_folder_recovery_preserves_concurrent_configuration_edits(self):
+        self.check_folder_failure(True)
+
+    def check_folder_failure(self, edited):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             profile = root / 'profile'
@@ -86,6 +92,7 @@ class VMBackendTests(unittest.TestCase):
             cfg = {'root': str(profile), 'shared': str(old), 'shared_mount': 'old',
                    'service': 'review-share', 'domain': 'review-vm', 'staging': '.steam-vm-123456789abc'}
             config = profile / 'vm.json'
+            config_path = config
             config.write_text(json.dumps(cfg))
             template = profile / 'virtiofs.service'
             template.write_text('old template')
@@ -97,14 +104,16 @@ class VMBackendTests(unittest.TestCase):
             installer.service_text.return_value = 'new template'
             installer.execute.return_value.stdout = 'shut off'
             def fail_registration(config):
-                unit.write_text('new unit')
+                unit.write_text(template.read_text())
+                if edited:config_path.write_text('concurrent edit')
                 raise RuntimeError('registration failed')
             installer.register_service.side_effect = fail_registration
             with patch.object(VMNetwork, 'cfg', new_callable=PropertyMock, return_value=cfg), \
                  patch('downloader.vm_backend.installer_module', return_value=installer), \
                  patch('downloader.vpn_lifecycle.has_downloads', return_value=False):
-                with self.assertRaisesRegex(RuntimeError, 'registration failed'):
+                with self.assertRaisesRegex(RuntimeError, 'needs attention' if edited else 'registration failed'):
                     VMNetwork(profile).set_shared_folder(root / 'new')
+            if edited:previous[config] = b'concurrent edit'
             self.assertEqual({path: path.read_bytes() for path in previous}, previous)
 
     def test_connection_recovers_when_vpn_daemon_finishes_starting(self):
