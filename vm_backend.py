@@ -297,10 +297,20 @@ except Exception as error:
         folder.mkdir(parents=True,exist_ok=True)
         # Validate isolation and mount identity before changing the running VM.
         candidate=installer.configuration(self.profile,folder)
-        cfg.update(shared=candidate['shared'],shared_mount=candidate['shared_mount'])
+        cfg = dict(cfg, shared=candidate['shared'], shared_mount=candidate['shared_mount'])
         relatives = (Path('Workshop'),) if cfg.get('download_storage') else (Path(cfg['staging'])/'downloading', Path(cfg['staging'])/'temp', Path('Workshop'))
         for relative in relatives:
             (folder/relative).mkdir(parents=True,exist_ok=True)
+        import pwd
+        from playlite.storage import atomic_bytes, atomic_json
+        identity=pwd.getpwuid(os.getuid()).pw_name
+        text=installer.service_text(cfg,installer.ensure_daemon(self.profile),installer.subordinate_id('/etc/subuid',identity),installer.subordinate_id('/etc/subgid',identity))
+        paths = [self.profile / 'virtiofs.service', self.profile / 'vm.json',
+                 self.profile / (cfg['service'] + '.service')]
+        if cfg.get('download_storage'):
+            paths.append(self.profile / (cfg['service'] + '-downloads.service'))
+        previous = {path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                    if path.exists() else (None, 0o600) for path in paths}
         state=installer.execute(['virsh','-c','qemu:///session','domstate',cfg['domain']]).stdout.strip()
         restart=state in ('running','paused')
         if restart:
@@ -309,17 +319,24 @@ except Exception as error:
             while installer.execute(['virsh','-c','qemu:///session','domstate',cfg['domain']]).stdout.strip()!='shut off':
                 if time.monotonic()>deadline:raise RuntimeError('VM is still shutting down. Retry saving the folder shortly.')
                 time.sleep(1)
-        import pwd
-        identity=pwd.getpwuid(os.getuid()).pw_name
-        text=installer.service_text(cfg,installer.ensure_daemon(self.profile),installer.subordinate_id('/etc/subuid',identity),installer.subordinate_id('/etc/subgid',identity))
-        installer.execute(['systemctl','--user','stop',cfg['service']])
-        (self.profile/'virtiofs.service').write_text(text)
-        installer.register_service(cfg)
-        path=self.profile/'vm.json'
-        temporary=self.profile/'vm.json.tmp'
-        temporary.write_text(json.dumps(cfg,indent=2));temporary.chmod(0o600);temporary.replace(path)
-        self.container=None
-        if restart:self.boot()
+        try:
+            installer.execute(['systemctl','--user','stop',cfg['service']])
+            atomic_bytes(self.profile/'virtiofs.service', text.encode())
+            installer.register_service(cfg)
+            atomic_json(self.profile/'vm.json', cfg)
+            self.container=None
+            if restart:self.boot()
+        except Exception as error:
+            self.container=None
+            try:
+                for path, (content, mode) in previous.items():
+                    if content is None:path.unlink(missing_ok=True)
+                    else:atomic_bytes(path, content, mode=mode)
+                installer.execute(['systemctl','--user','daemon-reload'])
+                if restart:self.boot()
+            except Exception as recovery:
+                raise RuntimeError('Shared-folder update failed; restoring the previous VM configuration also needs attention: '+str(recovery)) from error
+            raise
 
     def delete_vm(self,progress=lambda text:None):
         from .vpn_lifecycle import has_downloads
@@ -333,9 +350,13 @@ except Exception as error:
         disks=domain.findall('./devices/disk[@device="disk"]/source')
         if len(disks)!=1 or Path(disks[0].get('file','')).resolve()!=root/'disk.qcow2':
             raise RuntimeError('VM disk does not belong to this profile; deletion refused.')
-        fragment=installer.execute(['systemctl','--user','show',cfg['service']+'.service','--property=FragmentPath','--value']).stdout.strip()
-        if not fragment or Path(fragment).resolve()!=root/(cfg['service']+'.service'):
-            raise RuntimeError('Shared-folder service does not belong to this profile; deletion refused.')
+        services = [cfg['service']]
+        if cfg.get('download_storage'):
+            services.append(cfg['service'] + '-downloads')
+        for name in services:
+            fragment=installer.execute(['systemctl','--user','show',name+'.service','--property=FragmentPath','--value']).stdout.strip()
+            if not fragment or Path(fragment).resolve()!=root/(name+'.service'):
+                raise RuntimeError('Shared-folder service does not belong to this profile; deletion refused.')
         state=installer.execute(['virsh','-c','qemu:///session','domstate',cfg['domain']]).stdout.strip()
         if state=='paused':
             installer.execute(['virsh','-c','qemu:///session','resume',cfg['domain']])

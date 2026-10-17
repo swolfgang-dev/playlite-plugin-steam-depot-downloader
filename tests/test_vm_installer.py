@@ -57,6 +57,31 @@ class VMInstallerTests(unittest.TestCase):
                 self.assertTrue((root / 'vm.json').is_file())
                 self.assertFalse((root / 'installing.json').exists())
 
+    def test_retry_recognizes_only_its_stopped_defined_domain(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cfg = {'root': str(root), 'service': 'review-share', 'socket': '/review.sock', 'domain': 'review-vm'}
+            pending = root / 'installing.json'
+            pending.write_text(json.dumps(cfg))
+            (root / 'disk.qcow2').write_bytes(b'owned disk')
+            (root / 'virtiofs.service').write_text('owned service')
+            xml = f'<domain><devices><disk device="disk"><source file="{root}/disk.qcow2"/></disk><filesystem><source socket="/review.sock"/></filesystem></devices></domain>'
+            def execute(args):return Mock(stdout=xml if 'dumpxml' in args else 'shut off')
+            with patch.object(installer, 'execute', side_effect=execute), \
+                 patch.object(installer, 'register_service') as register, \
+                 patch.object(installer, 'write_launcher'):
+                installer.resume_defined_install(cfg, pending, False)
+            register.assert_called_once_with(cfg)
+            self.assertEqual(json.loads((root / 'vm.json').read_text()), cfg)
+            self.assertFalse(pending.exists())
+            pending.write_text(json.dumps(cfg))
+            with patch.object(installer, 'execute', return_value=Mock(stdout=xml.replace('/review.sock', '/foreign.sock'))), \
+                 patch.object(installer, 'register_service') as register:
+                with self.assertRaisesRegex(RuntimeError, 'does not match'):
+                    installer.resume_defined_install(cfg, pending, False)
+            register.assert_not_called()
+            self.assertTrue(pending.exists())
+
     def test_service_registration_links_profile_unit_to_user_manager(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)

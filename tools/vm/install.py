@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import stat
+import tempfile
 import time
 import urllib.request
 import uuid
@@ -288,6 +289,46 @@ def write_launcher(root):
     launcher.chmod(0o755)
 
 
+def finish_install(cfg, pending, start):
+    root = Path(cfg['root'])
+    write_launcher(root)
+    descriptor, name = tempfile.mkstemp(prefix='.vm-config-', dir=root)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            json.dump(cfg, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(root / 'vm.json')
+    finally:
+        temporary.unlink(missing_ok=True)
+    pending.unlink()
+    print('VM installed at ' + str(root), flush=True)
+    print('Guest setup runs on first boot. Sign into NordVPN there before starting Steam.', flush=True)
+    if start:open_vm(cfg)
+
+
+def resume_defined_install(cfg, pending, start):
+    """Recognize only the stopped domain from this exact pending installation."""
+    root = Path(cfg['root']).resolve()
+    if not pending.is_file() or json.loads(pending.read_text()) != cfg:
+        raise RuntimeError('A VM with this name already exists; choose another name.')
+    domain = ET.fromstring(execute(['virsh', '-c', 'qemu:///session', 'dumpxml', cfg['domain']]).stdout)
+    disks = domain.findall('./devices/disk[@device="disk"]/source')
+    sockets = {node.get('socket') for node in domain.findall('./devices/filesystem/source')}
+    expected = {socket for _, _, socket in storage_services(cfg)}
+    if (len(disks) != 1 or Path(disks[0].get('file', '')).resolve() != root / 'disk.qcow2'
+            or sockets != expected or not (root / 'disk.qcow2').is_file()):
+        raise RuntimeError('Existing VM does not match the interrupted installation; it was retained.')
+    if execute(['virsh', '-c', 'qemu:///session', 'domstate', cfg['domain']]).stdout.strip() != 'shut off':
+        raise RuntimeError('Stop the interrupted installation VM before retrying setup.')
+    for _, template, _ in storage_services(cfg):
+        if not (root / template).is_file():
+            raise RuntimeError('Interrupted VM service files are incomplete; they were retained.')
+    register_service(cfg)
+    finish_install(cfg, pending, start)
+
+
 def install(cfg, start=True):
     if os.getuid() == 0:
         raise RuntimeError('Run this installer as your desktop user, without sudo.')
@@ -315,7 +356,8 @@ def install(cfg, start=True):
     exists = subprocess.run(['virsh', '-c', 'qemu:///session', 'dominfo', cfg['domain']],
                             capture_output=True, env=host_environment())
     if exists.returncode == 0:
-        raise RuntimeError('A VM with this name already exists; choose another name.')
+        resume_defined_install(cfg, pending, start)
+        return
     identity = getpass.getuser()
     subuid = subordinate_id('/etc/subuid', identity)
     subgid = subordinate_id('/etc/subgid', identity)
@@ -354,13 +396,7 @@ def install(cfg, start=True):
         (root / 'virtiofs-downloads.service').write_text(service_text(download_config(cfg), binary, subuid, subgid))
     register_service(cfg)
     execute(['virsh', '-c', 'qemu:///session', 'define', xml])
-    (root / 'vm.json').write_text(json.dumps(cfg, indent=2)); (root / 'vm.json').chmod(0o600)
-    pending.unlink()
-    write_launcher(root)
-    print('VM installed at ' + str(root), flush=True)
-    print('Guest setup runs on first boot. Sign into NordVPN there before starting Steam.', flush=True)
-    if start:
-        open_vm(cfg)
+    finish_install(cfg, pending, start)
 
 
 def open_vm(cfg, desktop=True):

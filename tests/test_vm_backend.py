@@ -76,6 +76,37 @@ class VMBackendTests(unittest.TestCase):
             installer.assert_not_called()
 
 
+    def test_shared_folder_registration_failure_restores_profile_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile = root / 'profile'
+            profile.mkdir()
+            old = root / 'old'
+            old.mkdir()
+            cfg = {'root': str(profile), 'shared': str(old), 'shared_mount': 'old',
+                   'service': 'review-share', 'domain': 'review-vm', 'staging': '.steam-vm-123456789abc'}
+            config = profile / 'vm.json'
+            config.write_text(json.dumps(cfg))
+            template = profile / 'virtiofs.service'
+            template.write_text('old template')
+            unit = profile / 'review-share.service'
+            unit.write_text('old unit')
+            previous = {path: path.read_bytes() for path in (config, template, unit)}
+            installer = Mock()
+            installer.configuration.return_value = {'shared': str(root / 'new'), 'shared_mount': 'new'}
+            installer.service_text.return_value = 'new template'
+            installer.execute.return_value.stdout = 'shut off'
+            def fail_registration(config):
+                unit.write_text('new unit')
+                raise RuntimeError('registration failed')
+            installer.register_service.side_effect = fail_registration
+            with patch.object(VMNetwork, 'cfg', new_callable=PropertyMock, return_value=cfg), \
+                 patch('downloader.vm_backend.installer_module', return_value=installer), \
+                 patch('downloader.vpn_lifecycle.has_downloads', return_value=False):
+                with self.assertRaisesRegex(RuntimeError, 'registration failed'):
+                    VMNetwork(profile).set_shared_folder(root / 'new')
+            self.assertEqual({path: path.read_bytes() for path in previous}, previous)
+
     def test_connection_recovers_when_vpn_daemon_finishes_starting(self):
         network=VMNetwork('/tmp/vpn-recovery-test')
         agent=Mock()
