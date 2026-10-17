@@ -33,6 +33,7 @@ class DownloadDialog(QDialog):
         self.selected_app = None
         self.owns_connection = False
         self.jobs = set()
+        self.shutting_down = False
         self.process = None
         self.temporary = None
         self.container = None
@@ -523,7 +524,7 @@ class DownloadDialog(QDialog):
         return 'Steam: running · LuaMoon: '+moon
 
     def refresh_steam_status(self):
-        if self.authentication or self.steam_status_job is not None or not self.isVisible():return
+        if self.shutting_down or self.authentication or self.steam_status_job is not None or not self.isVisible():return
         if getattr(self.network,'session_suspended',False) is True:
             self.steam_status.setText('VM paused while a game is running. It resumes when the game exits.')
             return
@@ -702,6 +703,8 @@ class DownloadDialog(QDialog):
         job = Job(work); self.jobs.add(job)
         def done(message):
             self.busy = False; self.set_content_enabled(True); self.jobs.discard(job)
+            if self.shutting_down:
+                return
             if getattr(self,'vpn_connecting',False):
                 self.vpn_connecting=False;self.cancel.setText('Close')
             self.fetch.setEnabled(True); self.start_button.setEnabled(bool(self.authentication or self.rows or (self.content_info and self.depot.count())))
@@ -1209,3 +1212,16 @@ class DownloadDialog(QDialog):
         if self.authentication == 'steam':
             self.password.clear(); self.pending_password = ''
         super().closeEvent(event)
+
+    def shutdown_pending(self):
+        return self.busy or bool(self.jobs) or getattr(self, 'steam_status_job', None) is not None
+
+    def request_shutdown(self):
+        self.shutting_down = True
+        self.search_generation += 1
+        self.search_timer.stop()
+        if not self.authentication:
+            self.steam_status_timer.stop()
+        self.network.cancel()
+        if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
+            self.close_or_cancel()

@@ -26,7 +26,7 @@ class SteamSignInTests(unittest.TestCase):
         viewer=Mock();viewer.poll.return_value=None;dialog.viewer=viewer
         with patch('downloader.plugin.Job') as job,patch('downloader.steam_sign_in_dialog.QThreadPool'),patch.object(dialog,'accept',wraps=dialog.accept) as accept:
             dialog.refresh()
-            callback=job.return_value.signals.finished.connect.call_args.args[0]
+            callback=job.return_value.bind.call_args.args[1]
             callback('{"steam_running":true,"steam_session_saved":true}')
             accept.assert_called_once();viewer.terminate.assert_called_once()
             network.disconnect.assert_not_called();network.close_session.assert_not_called()

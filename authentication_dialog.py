@@ -58,7 +58,7 @@ class CredentialDialog(QDialog):
             if message.startswith(('Saved VPN credentials removed.','Saved authentication removed.')):
                 self.secret.clear()
             if hasattr(self, 'logout'): self.logout.setEnabled(True)
-        job.signals.finished.connect(done)
+        job.bind(self, done)
         self.status.setText('Signing in through the isolated VPN…' if self.provider == 'Moon' else 'Updating KWallet…')
         QThreadPool.globalInstance().start(job)
 

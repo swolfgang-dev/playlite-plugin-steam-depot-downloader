@@ -16,6 +16,26 @@ if 'downloader' not in sys.modules:
 from downloader.plugin import Plugin
 
 class UiTests(unittest.TestCase):
+    def test_shutdown_waits_for_jobs_without_running_followup_actions(self):
+        from unittest.mock import Mock
+        from downloader.download_dialog import DownloadDialog
+        from downloader.steam_runtime_dialog import SteamRuntimeDialog
+        for kind in (DownloadDialog, SteamRuntimeDialog):
+            with self.subTest(dialog=kind.__name__):
+                network = Mock(is_vm=False)
+                dialog = kind(network)
+                tasks = []
+                followup = Mock()
+                with patch('downloader.plugin.QThreadPool.globalInstance', return_value=Mock(start=tasks.append)):
+                    dialog.task(lambda *args: 'Done', followup)
+                    self.assertTrue(dialog.shutdown_pending())
+                    dialog.request_shutdown()
+                    tasks[0].run()
+                self.assertFalse(dialog.shutdown_pending())
+                followup.assert_not_called()
+                network.cancel.assert_called_once()
+                dialog.deleteLater()
+
     def test_worker_output_is_bounded_and_displayed_secrets_are_redacted(self):
         from unittest.mock import Mock
         from downloader.download_dialog import DownloadDialog

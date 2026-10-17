@@ -19,6 +19,7 @@ class SteamRuntimeDialog(QDialog):
         self.runtime=SteamRuntime(network) if not self.vm or enabled() else None
         self.network=network
         self.jobs=set();self.relay=None
+        self.closing = False
         self.waiting_login=False;self.setup_finished=False
         self.ready=False
         self.setWindowTitle('Isolated Steam — Playlite');self.resize(680,400)
@@ -146,7 +147,7 @@ class SteamRuntimeDialog(QDialog):
             self.log.appendPlainText(f'Could not save setup log: {error}')
 
     def task(self,operation,after=None):
-        if self.jobs:return
+        if self.closing or self.jobs:return
         from .plugin import Job
         result=[]
         def run():
@@ -167,6 +168,8 @@ class SteamRuntimeDialog(QDialog):
         if hasattr(self,'wizard_step'):job.signals.progress.connect(self.status.setText)
         def finished(message):
             self.jobs.discard(job);self.status.setText(message);self.append_log(message)
+            if self.closing:
+                return
             if self.vm:self.activity.setRange(0,1);self.activity.hide()
             for button in [*self.buttons,self.close_button]:button.setEnabled(True)
             if self.vm:self.auth_settings_button.setEnabled(True)
@@ -188,7 +191,7 @@ class SteamRuntimeDialog(QDialog):
                     self.login_timer.start()
             if hasattr(self,'update_feedback_visuals'):self.update_feedback_visuals(not bool(result))
             if result and after:after()
-        job.signals.finished.connect(finished);QThreadPool.globalInstance().start(job)
+        job.bind(self, finished);QThreadPool.globalInstance().start(job)
 
     def install(self):
         if self.jobs:return
@@ -306,3 +309,12 @@ class SteamRuntimeDialog(QDialog):
             owner=owner.parentWidget()
         if owner is None:disconnect_when_idle(self.network)
         super().closeEvent(event)
+
+    def shutdown_pending(self):
+        return bool(self.jobs)
+
+    def request_shutdown(self):
+        self.closing = True
+        self.network.cancel()
+        if self.vm:
+            self.login_timer.stop()

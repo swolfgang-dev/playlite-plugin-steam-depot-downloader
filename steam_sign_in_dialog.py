@@ -43,17 +43,20 @@ class SteamSignInDialog(QDialog):
             self.network.agent.rpc({'command':'start'})
             state=self.network.agent.rpc({'command':'status'})
             if not state.get('steam_session_saved'):
-                self.viewer=open_viewer(self.network,job.signals.progress.emit)
+                if not self.closing:
+                    self.viewer=open_viewer(self.network,job.signals.progress.emit)
+                    if self.closing:self.close_viewer()
             return json.dumps({'started':True})
         job=Job(start);self.job=job;job.signals.progress.connect(self.status.setText)
         def finished(message):
-            self.job=None;self.start_button.setEnabled(True)
+            self.job=None
             if self.closing:self.close_viewer();return
+            self.start_button.setEnabled(True)
             try:
                 if not json.loads(message).get('started'):raise ValueError()
                 self.status.setText('Waiting for Steam sign-in in the VM window…');self.timer.start();self.refresh()
             except (ValueError,TypeError,AttributeError):self.status.setText(message)
-        job.signals.finished.connect(finished);QThreadPool.globalInstance().start(job)
+        job.bind(self, finished);QThreadPool.globalInstance().start(job)
     def refresh(self):
         if self.job is not None or self.closing:return
         from .plugin import Job
@@ -68,8 +71,17 @@ class SteamSignInDialog(QDialog):
                 if self.viewer is not None and self.viewer.poll() is not None:
                     self.status.setText('VM viewer closed. Choose Open / retry Steam VM to continue sign-in.')
             except (ValueError,TypeError,AttributeError):self.status.setText(message)
-        job.signals.finished.connect(finished);QThreadPool.globalInstance().start(job)
+        job.bind(self, finished);QThreadPool.globalInstance().start(job)
     def done(self,result):
         self.closing=True;self.timer.stop();self.close_viewer();super().done(result)
     def closeEvent(self,event):
         self.closing=True;self.timer.stop();self.close_viewer();super().closeEvent(event)
+
+    def shutdown_pending(self):
+        return self.job is not None
+
+    def request_shutdown(self):
+        self.closing=True
+        self.timer.stop()
+        self.close_viewer()
+        self.network.cancel()
