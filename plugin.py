@@ -22,6 +22,12 @@ class Job(QRunnable):
         self.setAutoDelete(False)
         self.function = function
         self.signals = Signals()
+
+    def bind(self, owner, completed):
+        """Disconnect completion closures when their Qt view is destroyed."""
+        receiver = JobCallback(owner, completed)
+        self.signals.finished.connect(receiver.deliver)
+        return self
     def run(self):
         try:
             text = self.function()
@@ -37,6 +43,20 @@ class Job(QRunnable):
             from PyQt6 import sip
             if not sip.isdeleted(self.signals):
                 raise
+
+
+class JobCallback(QObject):
+    def __init__(self, owner, callback):
+        super().__init__(owner)
+        self.callback = callback
+
+    @pyqtSlot(str)
+    def deliver(self, message):
+        try:
+            self.callback(message)
+        finally:
+            self.callback = None
+            self.deleteLater()
 
 class SettingsWidget(QWidget):
     """Start the connection only when the settings page becomes visible."""

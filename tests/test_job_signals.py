@@ -5,6 +5,17 @@ from downloader.plugin import Job
 
 
 class JobSignalTests(unittest.TestCase):
+    def test_deleted_view_does_not_receive_queued_completion(self):
+        from PyQt6 import sip
+        from PyQt6.QtCore import QObject
+        owner = QObject()
+        received = []
+        job = Job(lambda: 'Done').bind(owner, received.append)
+        sip.delete(owner)
+        job.run()
+        test_worker.APP.processEvents()
+        self.assertEqual(received, [])
+
     def test_background_completion_is_delivered_on_the_gui_thread(self):
         app = test_worker.APP
         worker_threads = []

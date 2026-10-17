@@ -181,13 +181,14 @@ class SteamQueueTests(unittest.TestCase):
         row=queue.enqueue('ELDEN RING','/tmp/playlite-elden-handoff',Mock())
         snapshot={'app':1245620,'platform':'windows','language':'english','dlc':[],'info':metadata()}
         runner=SteamQueueRunner(Mock(),window,queue,row,snapshot)
-        from PyQt6.QtWidgets import QLineEdit
-        handoff=Mock();handoff.appid=QLineEdit();handoff.destination=QLineEdit()
+        from PyQt6.QtWidgets import QLineEdit, QComboBox
+        handoff=Mock();handoff.appid=QLineEdit();handoff.destination=QLineEdit();handoff.depot=QComboBox()
         with patch('downloader.download_dialog.DownloadDialog',return_value=handoff):
             runner.add_to_library()
             self.assertEqual(DownloadDialog.game_app(runner.dialog),1245620)
             self.assertEqual(runner.dialog.appid.text(),'ELDEN RING')
             self.assertEqual(runner.dialog.destination.text(),row.destination)
+            self.assertEqual(runner.dialog.depot.currentData(), 'windows')
             handoff.add_to_library.assert_called_once()
         runner.dispose();window.close()
 

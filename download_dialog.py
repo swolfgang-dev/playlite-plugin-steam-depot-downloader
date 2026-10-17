@@ -37,6 +37,7 @@ class DownloadDialog(QDialog):
         self.temporary = None
         self.container = None
         self.output = ''
+        self.output_failed = False
         self.total_downloaded = 0
         self.total_uncompressed = 0
         self.batch_started_at = 0
@@ -396,7 +397,7 @@ class DownloadDialog(QDialog):
             if hasattr(self,'picker_status'):self.picker_status.setText(f'{len(result)} matching games. Double-click a game or choose Select game.' if result else 'No matching games found.')
             self.status.setText(f'{len(result)} matching games. Choose the game you want to download.' if result else 'No matching games found.')
             self.load_search_covers(result, generation)
-        job.signals.finished.connect(done)
+        job.bind(self, done)
         self.status.setText('Searching Steam…')
         if hasattr(self,'picker_status'):self.picker_status.setText('Searching Steam…')
         QThreadPool.globalInstance().start(job)
@@ -417,7 +418,7 @@ class DownloadDialog(QDialog):
                 pixmap = QPixmap()
                 if data and pixmap.loadFromData(data) and app in self.search_items:
                     self.search_items[app].setIcon(QIcon(pixmap))
-        job.signals.finished.connect(done)
+        job.bind(self, done)
         QThreadPool.globalInstance().start(job)
 
     def select_game(self, item):
@@ -465,7 +466,7 @@ class DownloadDialog(QDialog):
             pixmap=QPixmap()
             if image and image[0] and pixmap.loadFromData(image[0]):
                 self.game_cover.setPixmap(pixmap.scaled(self.game_cover.size(),Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
-        job.signals.finished.connect(done);QThreadPool.globalInstance().start(job)
+        job.bind(self, done);QThreadPool.globalInstance().start(job)
 
     def open_authentication(self,name):
         if self.busy:return
@@ -598,7 +599,7 @@ class DownloadDialog(QDialog):
                                     'Game executables (*.exe *.sh *.AppImage);;All files (*)')
         if not executable:return
         from playlite.add_game import AddGameEditor
-        from playlite.app import save_game
+        from playlite.game_storage import save_game
         game={'Id':str(uuid.uuid4()),'Name':self.game_name,'InstallDirectory':self.destination.text(),
               'Executable':executable,'Platforms':[],'IsInstalled':True,'MetadataIds':{'SteamMetadata':str(self.game_app())}}
         installation_method=None
@@ -711,7 +712,7 @@ class DownloadDialog(QDialog):
                 self.status.setText(message)
                 if on_error:on_error(message)
             if not self.authentication:self.log.appendPlainText(self.status.text())
-        job.signals.finished.connect(done)
+        job.bind(self, done)
         job.signals.progress.connect(self.status.setText)
         if progress and not self.authentication:job.signals.progress.connect(self.log.appendPlainText)
         self.status.setText('Working through the isolated VPN…')
@@ -1027,6 +1028,7 @@ class DownloadDialog(QDialog):
         self.busy = True; self.set_content_enabled(False); self.fetch.setEnabled(False); self.start_button.setEnabled(False)
         self.cancel.setText('Cancel login' if self.authentication else 'Cancel download')
         self.output = ''; self.auth_needed = False
+        self.output_failed = False
         if self.authentication:self.log.clear()
         self.started_at=time.monotonic()
         if not self.authentication:
@@ -1043,8 +1045,11 @@ class DownloadDialog(QDialog):
     def read_output(self):
         text = bytes(self.process.readAllStandardOutput()).decode('utf-8', errors='replace')
         prompt_text = self.output[-180:] + text
-        self.output += text
-        self.log.insertPlainText(text)
+        self.output_failed = (getattr(self, 'output_failed', False)
+                              or 'No valid depot key' in prompt_text or 'result: AccessDenied' in prompt_text)
+        self.output = (self.output + text)[-1048576:]
+        from .downloader_log import redact
+        self.log.insertPlainText(redact(text))
         self.log.ensureCursorVisible()
         if not self.authentication:
             matches=re.findall(r'(\d+(?:\.\d+)?)%\s+/output/',prompt_text)
@@ -1109,7 +1114,7 @@ class DownloadDialog(QDialog):
                 self.network.steam_confirmed = True
                 self.status.setText('Steam authentication completed.')
             else:
-                require_download_success(code, self.output)
+                require_download_success(1 if self.output_failed else code, self.output)
                 totals=re.findall(r'Total downloaded: (\d+) bytes \((\d+) bytes uncompressed\)',self.output)
                 if totals:
                     self.total_downloaded+=int(totals[-1][0]); self.total_uncompressed+=int(totals[-1][1])

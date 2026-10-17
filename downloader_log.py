@@ -16,7 +16,8 @@ def redact(message):
 class DownloaderLog(QPlainTextEdit):
     def __init__(self,parent=None,path=None):
         super().__init__(parent)
-        self.path=Path(path or Path.home()/'.local/share/playlite/logs/steam-downloader.log')
+        state = Path(os.environ.get('XDG_STATE_HOME', str(Path.home()/'.local/state')))
+        self.path=Path(path or state/'playlite/logs/steam-downloader.log')
         self.last='';self.last_connection=0
         self.setReadOnly(True);self.document().setMaximumBlockCount(2000)
 

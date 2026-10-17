@@ -429,6 +429,7 @@ class SteamQueueRunner(QObject):
             self.dialog.selected_app=self.snapshot['app'];self.dialog.game_name=self.entry.name
             self.dialog.appid.setText(self.entry.name)
             self.dialog.destination.setText(self.entry.destination)
+            self.dialog.depot.addItem(self.snapshot['platform'].title(), self.snapshot['platform'])
         return self.dialog.add_to_library()
 
     def dispose(self):

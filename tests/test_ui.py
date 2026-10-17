@@ -16,6 +16,18 @@ if 'downloader' not in sys.modules:
 from downloader.plugin import Plugin
 
 class UiTests(unittest.TestCase):
+    def test_worker_output_is_bounded_and_displayed_secrets_are_redacted(self):
+        from unittest.mock import Mock
+        from downloader.download_dialog import DownloadDialog
+        dialog = DownloadDialog(Mock())
+        dialog.process = Mock()
+        dialog.process.readAllStandardOutput.return_value = b'result: AccessDenied\n' + b'x' * 1100000 + b'\npassword=private\n'
+        dialog.read_output()
+        self.assertLessEqual(len(dialog.output), 1048576)
+        self.assertTrue(dialog.output_failed)
+        self.assertNotIn('private', dialog.log.toPlainText())
+        dialog.deleteLater()
+
     def setUp(self):
         # These lifecycle tests cover the retained Docker backend explicitly.
         backend = patch.dict(os.environ, {'PLAYLITE_STEAM_BACKEND': 'docker'})
