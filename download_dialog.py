@@ -618,13 +618,20 @@ class DownloadDialog(QDialog):
                     field.setText(game['Prefix'])
             prefill_prefix()
             dialog.installation_method.currentIndexChanged.connect(prefill_prefix)
-        if dialog.exec()==QDialog.DialogCode.Accepted:
-            parent.games=save_game(parent.data,parent.games,dialog.result_game)
-            parent.focus_added_game(dialog.result_game['Id'])
-            for plugin in dialog.generic_plugins:plugin.after_game_added(parent,dialog.result_game,dialog)
+        from playlite.lifecycle import run_dialog
+        try:
+            while run_dialog(dialog)==QDialog.DialogCode.Accepted:
+                try:
+                    parent.games=dialog.persist(lambda game:save_game(parent.data,parent.games,game))
+                except Exception as error:
+                    dialog.error.setText('Could not save the Playlite entry: '+str(error))
+                    continue
+                parent.focus_added_game(dialog.result_game['Id'])
+                for plugin in dialog.generic_plugins:plugin.after_game_added(parent,dialog.result_game,dialog)
+                self.status.setText('Game added to Playlite.')
+                return dialog.result_game['Id']
+        finally:
             for cache in dialog.download_caches:cache.cleanup()
-            self.status.setText('Game added to Playlite.')
-            return dialog.result_game['Id']
 
     def connect_vpn(self,automatic=False):
         if self.busy:return
