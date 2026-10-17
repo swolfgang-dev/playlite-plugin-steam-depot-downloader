@@ -279,6 +279,21 @@ class SettingsCloseTests(UiTests):
             self.wait(plugin)
             disconnect.assert_called_once()
 
+    def test_deleted_settings_view_still_releases_plugin_job(self):
+        from PyQt6 import sip
+        from unittest.mock import Mock
+        plugin = Plugin()
+        widget = plugin.create_settings()
+        queued = []
+        with patch('downloader.plugin.QThreadPool.globalInstance', return_value=Mock(start=queued.append)), \
+             patch.object(plugin, 'disconnect_after_settings') as disconnect:
+            plugin.steam_task(widget, lambda progress: 'ready', Mock())
+            self.assertEqual(len(plugin.jobs), 1)
+            sip.delete(widget)
+            queued[0].run()
+            self.assertFalse(plugin.jobs)
+            disconnect.assert_called_once()
+
 class GameSelectionTests(unittest.TestCase):
     def test_selecting_search_result_sets_id_and_discards_old_pack(self):
         from downloader.download_dialog import DownloadDialog

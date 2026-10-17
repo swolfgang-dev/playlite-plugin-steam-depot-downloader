@@ -62,7 +62,12 @@ class SettingsWidget(QWidget):
     """Start the connection only when the settings page becomes visible."""
     def showEvent(self, event):
         super().showEvent(event)
-        QTimer.singleShot(0, self.on_open)
+        QTimer.singleShot(0, self.open_if_visible)
+
+    @pyqtSlot()
+    def open_if_visible(self):
+        if self.isVisible():
+            self.on_open()
 
 class Plugin(GenericPlugin):
     def __init__(self):
@@ -371,12 +376,12 @@ class Plugin(GenericPlugin):
         widget.steam_timer.timeout.connect(lambda:self.refresh_steam(widget) if widget.isVisible() else None)
         widget.steam_timer.start()
         form = section('Game files' if vm else 'Downloads')
-        widget.download_root = QLineEdit(default_download_root() if vm else self.settings().value('download_root', '', type=str))
+        widget.download_root = QLineEdit(default_download_root(widget) if vm else self.settings().value('download_root', '', type=str))
         from .download_location import general_download_root
-        widget.download_root.setPlaceholderText(general_download_root() + ' (automatic)')
+        widget.download_root.setPlaceholderText(general_download_root(widget) + ' (automatic)')
         browse_root = QPushButton('Browse…')
         def choose_root():
-            folder = QFileDialog.getExistingDirectory(widget, 'Default download location', widget.download_root.text() or default_download_root())
+            folder = QFileDialog.getExistingDirectory(widget, 'Default download location', widget.download_root.text() or default_download_root(widget))
             if folder: widget.download_root.setText(folder)
         browse_root.clicked.connect(choose_root)
         root_line = QHBoxLayout(); root_line.setSpacing(10)
@@ -456,9 +461,13 @@ class Plugin(GenericPlugin):
         job=Job(work);self.jobs.add(job)
         job.signals.progress.connect(widget.steam_status.setText)
         def finished(error):
+            from PyQt6 import sip
+            self.jobs.discard(job)
+            if isinstance(widget, QObject) and sip.isdeleted(widget):
+                self.disconnect_after_settings()
+                return
             if inspection:widget.steam_checking=False
             else:widget.steam_busy=False
-            self.jobs.discard(job)
             if widget.settings_closed:return
             if inspection and (widget.steam_busy or generation!=widget.steam_generation):return
             if result:done(result[0])
@@ -552,7 +561,8 @@ class Plugin(GenericPlugin):
         def finished(text):
             self.busy = False
             self.jobs.discard(job)
-            if widget.settings_closed:
+            from PyQt6 import sip
+            if (isinstance(widget, QObject) and sip.isdeleted(widget)) or widget.settings_closed:
                 self.disconnect_after_settings()
                 return
             try:
@@ -581,7 +591,7 @@ class Plugin(GenericPlugin):
         if getattr(self.network,'is_vm',False) is True and (self.network.profile/'vm.json').exists():
             if root is None:
                 from .download_location import general_download_root
-                root=Path(general_download_root())
+                root=Path(general_download_root(widget))
             self.network.set_shared_folder(root)
         settings.setValue('download_root', str(root) if value and root is not None else '')
         settings.setValue('country', preferences.country)

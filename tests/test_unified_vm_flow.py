@@ -141,6 +141,35 @@ class UnifiedVMFlowTests(unittest.TestCase):
             self.assertEqual(installer.execute.call_args.args[0],['virsh','-c','qemu:///session','shutdown','test-vm'])
             self.assertFalse(any('managedsave' in call.args[0] for call in installer.execute.call_args_list))
 
+    def test_general_download_root_uses_active_library_profile(self):
+        from PyQt6.QtCore import QSettings
+        from types import SimpleNamespace
+        from downloader.download_location import general_download_root
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder)
+            settings = QSettings(str(data / 'ui.ini'), QSettings.Format.IniFormat)
+            settings.setValue('installation/defaultFolder', '/custom/library/games')
+            settings.sync()
+            owner = SimpleNamespace(data=data)
+            view = SimpleNamespace(parentWidget=lambda: owner)
+            self.assertEqual(general_download_root(view), '/custom/library/games')
+
+    def test_wizard_hides_sidebar_on_small_desktops(self):
+        from downloader.steam_runtime_dialog import SteamRuntimeDialog
+        network = Mock(is_vm=True, profile=Path(os.environ['XDG_DATA_HOME']) / 'review-vm')
+        network.cfg = {}
+        with patch('downloader.vm_backend.enabled', return_value=False):
+            dialog = SteamRuntimeDialog(network)
+        dialog.setMinimumSize(0, 0)
+        dialog.resize(520, 600)
+        dialog.show()
+        self.app.processEvents()
+        self.assertTrue(dialog.setup_sidebar.isHidden())
+        dialog.resize(1000, 700)
+        self.app.processEvents()
+        self.assertFalse(dialog.setup_sidebar.isHidden())
+        dialog.close()
+
     def test_wizard_fresh_profile_offers_folder_and_continuation(self):
         from downloader.steam_runtime_dialog import SteamRuntimeDialog
         with tempfile.TemporaryDirectory() as folder,patch.dict(os.environ,{'PLAYLITE_STEAM_VM_ROOT':folder,'XDG_STATE_HOME':folder}):

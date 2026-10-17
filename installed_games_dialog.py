@@ -14,7 +14,7 @@ def queued_app(network,appid):
 class InstalledGamesDialog(QDialog):
     def __init__(self,network,parent=None):
         super().__init__(parent)
-        self.network=network;self.runtime=SteamRuntime(network);self.job=None;self.games=[]
+        self.network=network;self.runtime=SteamRuntime(network);self.job=None;self.games=[];self.closing=False
         self.setWindowTitle('Installed Steam content — Playlite');self.resize(820,460)
         layout=QVBoxLayout(self)
         note=QLabel('Manage games and tools in the Steam VM. Uninstalling a game from its default shared library deletes that game’s shared files. Exported copies in other folders are retained.' if getattr(network,'is_vm',False) is True else 'Manage games and tools in isolated Steam. Uninstalling here keeps the copies exported to your Playlite download folders.')
@@ -43,19 +43,21 @@ class InstalledGamesDialog(QDialog):
         self.uninstall_button.setEnabled(not busy and game is not None and game['status']!='Downloading' and not queued_app(self.network,game['appid']))
 
     def task(self,operation,after):
-        if self.job:return
+        if self.job or self.closing:return
         from .plugin import Job
         result=[]
         def run():result.append(operation());return 'Done'
         self.job=Job(run);job=self.job;self.update_buttons()
         def finished(message):
-            self.job=None;self.update_buttons()
+            self.job=None
+            if self.closing:return
+            self.update_buttons()
             if result:after(result[0])
             else:self.status.setText(message)
-        job.signals.finished.connect(finished);QThreadPool.globalInstance().start(job)
+        job.bind(self,finished);QThreadPool.globalInstance().start(job)
 
     def refresh(self):
-        if self.job:return
+        if self.job or self.closing:return
         self.status.setText('Querying isolated Steam…')
         self.task(lambda:self.runtime.request('installed_games'),self.populate)
 
@@ -68,7 +70,7 @@ class InstalledGamesDialog(QDialog):
 
     def uninstall(self):
         game=self.selected()
-        if self.job or game is None:return
+        if self.closing or self.job or game is None:return
         if game['status']=='Downloading' or queued_app(self.network,game['appid']):
             self.status.setText('Cancel this game’s queued or active download before uninstalling it.');return
         answer=QMessageBox.question(self,'Uninstall from isolated Steam?',f'Uninstall {game["name"]} from isolated Steam?\n\nIts Steam installation files will be removed. Copies in other folders will be kept.',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)
@@ -95,3 +97,10 @@ class InstalledGamesDialog(QDialog):
             from .vpn_lifecycle import disconnect_when_idle
             disconnect_when_idle(self.network)
         super().closeEvent(event)
+
+    def shutdown_pending(self):
+        return self.job is not None
+
+    def request_shutdown(self):
+        # Let a submitted Steam uninstall finish; do not submit follow-up work.
+        self.closing = True

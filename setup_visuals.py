@@ -1,5 +1,5 @@
 """Native Qt presentation for the Steam setup flow."""
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QObject, QEvent
 from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import QWidget,QFrame,QLabel,QVBoxLayout,QHBoxLayout,QProgressBar,QScrollArea,QLayout,QSizePolicy
 
@@ -66,7 +66,7 @@ def build(dialog, steps):
     dialog.form_scroll=scroll
     dialog.setup_card=card
     root=QVBoxLayout(dialog);root.setContentsMargins(24,24,24,24);root.setSpacing(16)
-    title=QLabel('Set up Steam Downloader');title.setObjectName('setupTitle');root.addWidget(title)
+    title=QLabel('Set up Steam Downloader');title.setObjectName('setupTitle');title.setWordWrap(True);root.addWidget(title)
     subtitle=QLabel('A private Steam environment. Your games stay in the folder you choose.')
     subtitle.setObjectName('setupSubtitle');subtitle.setWordWrap(True);root.addWidget(subtitle)
     overall=QProgressBar();overall.setObjectName('setupOverall');overall.setRange(0,len(steps));overall.setTextVisible(False);overall.setFixedHeight(4);root.addWidget(overall)
@@ -77,6 +77,14 @@ def build(dialog, steps):
     for index,text in enumerate(short):
         label=QLabel(f'{index+1:02}  {text}');label.setObjectName('setupStep');side.addWidget(label);labels.append(label)
     side.addStretch();sidebar.setMinimumWidth(200);row.addWidget(sidebar);row.addWidget(card,1)
+    class ResponsiveSidebar(QObject):
+        def eventFilter(self, watched, event):
+            if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+                sidebar.setVisible(dialog.width() >= 800)
+            return False
+    dialog.setup_sidebar = sidebar
+    dialog.sidebar_layout = ResponsiveSidebar(dialog)
+    dialog.installEventFilter(dialog.sidebar_layout)
     dialog.stage.setObjectName('setupStepTitle');dialog.stage.setWordWrap(True)
     dialog.status.setObjectName('setupFeedback');dialog.status.setTextFormat(Qt.TextFormat.PlainText)
     dialog.buttons[0].setObjectName('setupPrimary')

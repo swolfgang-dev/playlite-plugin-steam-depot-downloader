@@ -37,7 +37,7 @@ class SteamRuntimeDialog(QDialog):
             self.auth_settings_button=authentication
             self.stage=QLabel('Step 1 of 4 · Game folder');layout.addWidget(self.stage)
             from .download_location import default_download_root
-            folder_line=QHBoxLayout();self.shared_folder=QLineEdit(default_download_root())
+            folder_line=QHBoxLayout();self.shared_folder=QLineEdit(default_download_root(self))
             self.shared_folder.setReadOnly(enabled())
             browse=QPushButton('Choose game folder…');browse.setEnabled(not enabled())
             self.folder_button=browse

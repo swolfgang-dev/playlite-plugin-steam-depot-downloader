@@ -106,7 +106,7 @@ class DownloadDialog(QDialog):
         self.destination = QLineEdit()
         if getattr(network,'is_vm',False) is True:self.destination.setReadOnly(True)
         from .download_location import default_download_root
-        self.default_root = default_download_root()
+        self.default_root = default_download_root(self)
         browse = QPushButton('Browse…'); browse.clicked.connect(self.browse)
         if getattr(network,'is_vm',False) is True:browse.hide()
         line = QHBoxLayout(); line.setSpacing(10); line.addWidget(self.destination); line.addWidget(browse)
@@ -486,7 +486,7 @@ class DownloadDialog(QDialog):
         dialog=SteamRuntimeDialog(self.network,self)
         accepted=dialog.exec()==QDialog.DialogCode.Accepted
         from .download_location import default_download_root
-        self.default_root=default_download_root()
+        self.default_root=default_download_root(self)
         self.steam_status_timer.start()
         if accepted:self.connect_vpn(automatic=True)
 
@@ -599,7 +599,7 @@ class DownloadDialog(QDialog):
             executable,_=choose_file(self,'Choose the game executable',self.destination.text(),
                                     'Game executables (*.exe *.sh *.AppImage);;All files (*)')
         if not executable:return
-        from playlite.add_game import AddGameEditor
+        from playlite.add_game import AddGameEditor, notify_game_added
         from playlite.game_storage import save_game
         game={'Id':str(uuid.uuid4()),'Name':self.game_name,'InstallDirectory':self.destination.text(),
               'Executable':executable,'Platforms':[],'IsInstalled':True,'MetadataIds':{'SteamMetadata':str(self.game_app())}}
@@ -629,7 +629,7 @@ class DownloadDialog(QDialog):
                     dialog.error.setText('Could not save the Playlite entry: '+str(error))
                     continue
                 parent.focus_added_game(dialog.result_game['Id'])
-                for plugin in dialog.generic_plugins:plugin.after_game_added(parent,dialog.result_game,dialog)
+                notify_game_added(parent, dialog)
                 self.status.setText('Game added to Playlite.')
                 return dialog.result_game['Id']
         finally:

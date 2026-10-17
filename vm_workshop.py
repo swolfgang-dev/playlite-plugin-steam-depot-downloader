@@ -26,8 +26,10 @@ class WorkshopVM:
     def prepare(self, app, progress):
         progress('Starting Steam inside the VM…')
         self.start()
+        self.network.check_cancelled()
         deadline = time.monotonic() + 90
         while True:
+            self.network.check_cancelled()
             try:
                 self.request('authentication_status')
                 break
@@ -40,6 +42,7 @@ class WorkshopVM:
             self.request('add', app)
             deadline = time.monotonic() + 180
             while True:
+                self.network.check_cancelled()
                 state = self.request('add_status', app).get('state', {})
                 if state.get('status') == 'done':
                     break
@@ -56,6 +59,7 @@ class WorkshopPanel(QWidget):
     def __init__(self, parent=None, network=None):
         super().__init__(parent)
         self.jobs = set()
+        self.closing = False
         self.runtime = WorkshopVM(network)
         layout = QVBoxLayout(self)
         note = QLabel('Steam Workshop uses the Steam VM and its NordVPN connection. '
@@ -84,7 +88,7 @@ class WorkshopPanel(QWidget):
 
     def task(self, function):
         from .plugin import Job
-        if self.jobs:
+        if self.jobs or self.closing:
             return
         job = Job(lambda: function(job.signals.progress.emit))
         self.jobs.add(job)
@@ -92,13 +96,12 @@ class WorkshopPanel(QWidget):
             button.setEnabled(False)
         job.signals.progress.connect(self.status.setText)
         def finished(message):
+            self.jobs.discard(job)
+            if self.closing:return
             self.status.setText(message)
             for button in self.buttons:
                 button.setEnabled(True)
-            # Release after Qt finishes signal delivery.
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, lambda: self.jobs.discard(job))
-        job.signals.finished.connect(finished)
+        job.bind(self, finished)
         QThreadPool.globalInstance().start(job)
 
     def closeEvent(self,event):
@@ -153,3 +156,10 @@ class WorkshopPanel(QWidget):
                     ' · LuaMoon: ' + ('installed' if state['moon_installed'] else 'missing') +
                     ' · VPN: ' + ('verified' if self.runtime.network.container else 'unavailable'))
         self.task(work)
+
+    def shutdown_pending(self):
+        return bool(self.jobs)
+
+    def request_shutdown(self):
+        self.closing = True
+        self.runtime.network.cancel()

@@ -58,3 +58,13 @@ class InstalledGamesTests(unittest.TestCase):
         network=Mock();network.download_queue=Mock();row=Mock();row.state='Queued';row.steam_appid=10;row.controller=None
         network.download_queue.entries=[row]
         self.assertTrue(queued_app(network,10));self.assertFalse(queued_app(network,20))
+
+    def test_shutdown_prevents_queued_refresh_without_interrupting_uninstall(self):
+        network = Mock()
+        with patch('downloader.installed_games_dialog.SteamRuntime') as runtime:
+            dialog = InstalledGamesDialog(network)
+        dialog.request_shutdown()
+        self.app.processEvents()
+        runtime.return_value.request.assert_not_called()
+        self.assertFalse(dialog.shutdown_pending())
+        dialog.close()
