@@ -11,7 +11,7 @@ dns_policy = Path('/etc/sudoers.d/playlite-vm-dns')
 dns_policy.write_text('ubuntu ALL=(root) NOPASSWD: /usr/bin/resolvectl dnssec nordtun no, /usr/bin/resolvectl dnssec nordlynx no, /usr/bin/resolvectl flush-caches\n')
 dns_policy.chmod(0o440)
 installer = ASSETS / 'steam/moon-install.sh'
-if hashlib.sha256(installer.read_bytes()).hexdigest() != '1c6896832d32d6d17c5635daf95b539763955f7ea1d9bd4446e24c2e8a5806c2':
+if hashlib.sha256(installer.read_bytes()).hexdigest() != '37765e221b1f3b9597c3a965da15f3ebfe68676443e8784a928d8a26117e3947':
     raise SystemExit('LuaMoon installer checksum mismatch.')
 for folder in (Path('/home/ubuntu/.config'), Path('/home/ubuntu/.local'),
                Path('/home/ubuntu/.local/share'), Path('/home/ubuntu/.local/state'),

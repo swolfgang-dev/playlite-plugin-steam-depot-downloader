@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================================
 #  luatools-moon — one-shot installer
+#  Playlite modification, 2026-10-17: preserve extra save entries and make
+#  legacy CAS migration recoverable without recursively deleting user data.
 # ============================================================================
 #  Installs the full stack in a single command:
 #
@@ -2688,23 +2690,33 @@ repair_cas_save_layout() {
 				*.es3|*.jpg|*.sav|*.save|*.dat|*.bin|*.json|*.xml) ;;
 				*) continue ;;
 			esac
-			# Must hold exactly one regular file...
+			# A save directory must contain exactly one entry, not merely one
+			# regular file alongside additional directories or symlinks.
 			local files=()
 			while IFS= read -r -d '' f; do files+=("$f"); done \
-				< <(find "$dir" -maxdepth 1 -type f -print0 2>/dev/null)
+				< <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 			[ "${#files[@]}" -eq 1 ] || continue
+			[ -f "${files[0]}" ] && [ ! -L "${files[0]}" ] || continue
 			leaf="$(basename "${files[0]}")"
-			# ...named like a 40-char SHA-1 (the CAS leaf).
 			case "$leaf" in
 				*[!0-9a-f]*) continue ;;
 			esac
 			[ "${#leaf}" -eq 40 ] || continue
 
-			tmp="$(mktemp "$(dirname "$dir")/.casrepair.XXXXXX")" || continue
-			if cp -p "${files[0]}" "$tmp" && rm -rf "$dir" && mv "$tmp" "$dir"; then
+			# Keep the original directory until an exclusive hard link publishes
+			# its file. Failure leaves the original bytes available for recovery.
+			tmp="$(mktemp -d "$(dirname "$dir")/.casrepair.XXXXXX")" || continue
+			if ! mv -T -- "$dir" "$tmp"; then
+				rmdir -- "$tmp" 2>/dev/null || true
+				continue
+			fi
+			if ln -- "$tmp/$leaf" "$dir"; then
+				rm -f -- "$tmp/$leaf"
+				rmdir -- "$tmp" 2>/dev/null || true
 				repaired=$((repaired+1))
 			else
-				rm -f "$tmp" 2>/dev/null
+				mv -nT -- "$tmp" "$dir" 2>/dev/null || true
+				[ ! -d "$tmp" ] || log_warn "Save migration retained recovery at $tmp"
 			fi
 		done < <(find "$root" -type d -print0 2>/dev/null)
 	done

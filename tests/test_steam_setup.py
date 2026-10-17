@@ -239,3 +239,30 @@ class MoonBridgeTests(unittest.TestCase):
             self.assertEqual(main.read_bytes(), first)
             self.assertEqual(first.count(setup.MARKER.encode()), 1)
             self.assertFalse(list(main.parent.glob('.playlite-bridge-*')))
+
+
+class LegacySaveMigrationTests(unittest.TestCase):
+    def test_migration_preserves_additional_entries_and_recovers_link_failure(self):
+        import os
+        import subprocess
+        script = Path(__file__).resolve().parents[1] / 'tools/steam/moon-install.sh'
+        for fail_link in (False, True):
+            with self.subTest(fail_link=fail_link), tempfile.TemporaryDirectory() as temporary:
+                home = Path(temporary)
+                storage = home / '.config/CloudRedirect/storage'
+                valid = storage / 'valid.sav'
+                unsafe = storage / 'extra.sav'
+                for folder in (valid, unsafe):
+                    folder.mkdir(parents=True)
+                    (folder / ('a' * 40)).write_bytes(b'save bytes')
+                (unsafe / 'nested').mkdir()
+                (unsafe / 'nested/user-data').write_bytes(b'keep')
+                code = 'SLSPLUGIN_LIB_ONLY=1 source "$1"; '
+                if fail_link:code += 'ln() { return 1; }; '
+                code += 'repair_cas_save_layout'
+                subprocess.run(['bash', '-c', code, 'review-migration', str(script)],
+                    env=dict(os.environ, HOME=str(home)), check=True, capture_output=True, timeout=10)
+                self.assertEqual((unsafe / ('a' * 40)).read_bytes(), b'save bytes')
+                self.assertEqual((unsafe / 'nested/user-data').read_bytes(), b'keep')
+                self.assertEqual((valid / ('a' * 40)).read_bytes() if fail_link else valid.read_bytes(), b'save bytes')
+                self.assertFalse(list(storage.glob('.casrepair.*')))

@@ -5,6 +5,11 @@ Licensed under Apache License 2.0; see MOBY-LICENSE.
 The local profile enables the namespace and mount operations required by
 Steam's nested sandbox while retaining the default restrictions on other calls.
 
-Moon's installer and license are downloaded during the image build from the
-pinned upstream revision recorded in Dockerfile. Component release selection
-is performed by that upstream installer.
+Moon's installer and AGPL license are vendored from upstream revision
+2c739b5349a972bb1932ac9457b0acf91b09e044:
+https://github.com/swwayps/luatools-moon
+The 2026-10-17 Playlite modification preserves extra entries during legacy CAS
+save migration and retains the original directory until exclusive publication
+succeeds. The modified source is distributed as moon-install.sh. Dockerfile
+and the VM setup recipe verify its checksum. Component release selection is
+performed by that installer and remains independent of the recipe revision.
