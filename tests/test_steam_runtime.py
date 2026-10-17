@@ -10,6 +10,20 @@ from downloader.steam_runtime import SteamRuntime,RUNTIME_IMAGE
 from downloader.constants import IMAGE,WORKER_LABEL
 
 class RuntimeTests(unittest.TestCase):
+    def test_fresh_install_opens_native_wizard_but_existing_download_does_not(self):
+        spec=importlib.util.spec_from_file_location('wizard_bridge',Path(__file__).resolve().parents[1]/'tools/steam/bridge.py')
+        bridge=importlib.util.module_from_spec(spec);spec.loader.exec_module(bridge)
+        with tempfile.TemporaryDirectory() as folder:
+            bridge.HOME=Path(folder)/'home';bridge.LIBRARY=Path(folder)/'library'
+            with patch.object(bridge,'launch') as launch,patch.object(bridge,'steam_binary',return_value='/steam-wrapper'):
+                bridge.open_new_install(10)
+                launch.assert_called_once_with(['/steam-wrapper','steam://install/10'],'steam.log')
+                launch.reset_mock()
+                manifests=bridge.HOME/'.steam/debian-installation/steamapps';manifests.mkdir(parents=True)
+                (manifests/'appmanifest_10.acf').write_text('existing partial download')
+                bridge.open_new_install(10)
+                launch.assert_not_called()
+
     def test_permission_repair_only_changes_owned_temporary_files(self):
         spec=importlib.util.spec_from_file_location('permissions_bridge',Path(__file__).resolve().parents[1]/'tools/steam/bridge.py')
         bridge=importlib.util.module_from_spec(spec);spec.loader.exec_module(bridge)

@@ -129,7 +129,16 @@ if(installed){
  await SteamClient.Downloads.ResumeAppUpdate(r.appid,'0');
 }
 else{
- await SteamClient.Installs.OpenInstallWizard([r.appid]);
+ // The host opens steam://install/<appid>. OpenInstallWizard from this
+ // SharedJSContext can silently leave the native manager idle.
+ let ready=false;
+ for(let attempt=0;attempt<40;attempt++){
+  const manager=await SteamClient.Installs.GetInstallManagerInfo();
+  ready=manager.eInstallState!==0&&Array.isArray(manager.rgApps)&&manager.rgApps.some(app=>app.nAppID===r.appid);
+  if(ready)break;
+  await new Promise(resolve=>setTimeout(resolve,250));
+ }
+ if(!ready)throw Error('Steam did not open the installation wizard. Open its desktop and retry.');
  await SteamClient.Installs.SetInstallFolder(folder.nFolderIndex);
  await SteamClient.Installs.SetCreateShortcuts(false,false);
  await SteamClient.Installs.ContinueInstall();

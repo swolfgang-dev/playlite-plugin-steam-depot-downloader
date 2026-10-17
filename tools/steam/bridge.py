@@ -84,6 +84,14 @@ def steam_binary():
     wrapper=HOME/'.local/share/SLSsteam/path/steam'
     return str(wrapper) if wrapper.is_file() else '/usr/games/steam'
 
+
+def open_new_install(app):
+    """Initialize fresh installs through the same URI as Steam's desktop UI."""
+    manifest=f'appmanifest_{app}.acf'
+    libraries={LIBRARY,HOME/'.steam/steam',HOME/'.steam/debian-installation'}
+    if not any((library/'steamapps'/manifest).exists() for library in libraries):
+        launch([steam_binary(),'steam://install/'+str(app)],'steam.log')
+
 def app_id(value):
     if type(value) is not int or not 0<value<2**32:raise ValueError('Invalid App ID.')
     return value
@@ -463,13 +471,20 @@ def dispatch(request):
         previous_events=content_events(app)
         recover=request.get('recover_paused',False)
         if type(recover) is not bool:raise ValueError('Invalid paused download recovery selection.')
+        open_new_install(app)
         response=steam_action({'action':'install','appid':app,'platform':request['platform'],'dlc':dlc,'language':language,'restart_paused':recover and paused_install(app)})
         response['previous_events']=previous_events
         return response
     if command=='retail_selection':
         from retail_selection import retail_packages,package_depots,restrict_depots
         app=app_id(request.get('appid'))
-        packages=retail_packages(app)
+        # Reuse the initial package snapshot after restarting Steam. Store
+        # responses may vary by regional CDN/VPN exit during one attempt.
+        packages=request.get('packages')
+        if packages is None:packages=retail_packages(app)
+        elif (not isinstance(packages,list) or not packages or len(packages)>64
+              or any(type(value) is not int or not 0<value<2**32 for value in packages)):
+            raise ValueError('Invalid retail package snapshot.')
         records={};depots={}
         # Native console requests missing metadata asynchronously. Retry only
         # this bounded set; no provider calls or separate Steam login.

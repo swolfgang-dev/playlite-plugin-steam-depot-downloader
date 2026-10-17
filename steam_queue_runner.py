@@ -244,7 +244,8 @@ class SteamQueueRunner(QObject):
                         progress('Waiting for Steam’s content API to become ready')
                         self.cancelled.wait(2)
                 progress('Retail packages '+', '.join(map(str,selection.get('packages',[])))+' · excluded depots '+(', '.join(map(str,selection.get('excluded_depots',[]))) or 'none'))
-                if selection.get('restart_required'):
+                for reload_attempt in range(3):
+                    if not selection.get('restart_required'):break
                     progress('Restarting isolated Steam to apply retail depot selection')
                     self.runtime.request('stop')
                     deadline=time.monotonic()+30
@@ -257,12 +258,16 @@ class SteamQueueRunner(QObject):
                     while True:
                         if self.cancelled.is_set():raise RuntimeError('Cancelled')
                         try:
-                            reloaded=self.runtime.request('retail_selection',app)
+                            reloaded=self.runtime.request('retail_selection',app,packages=selection['packages'])
                             break
                         except (OSError,RuntimeError):
                             if time.monotonic()>deadline:raise RuntimeError('Steam did not become ready after applying retail depot selection.')
                             self.cancelled.wait(1)
-                    if reloaded.get('restart_required'):raise RuntimeError('The integration restored excluded depots. Retry after closing isolated Steam.')
+                    selection=reloaded
+                    if not selection.get('restart_required'):break
+                    progress('Steam refreshed its depot metadata; reloading the verified selection again')
+                else:
+                    raise RuntimeError('The integration repeatedly changed the selected depots. Close isolated Steam and retry.')
                 progress('Applying '+platform.title()+' content selection')
                 installation=self.runtime.request('install',app,platform=platform,language=self.snapshot['language'],dlc=self.snapshot['dlc'])
                 if installation.get('restarted_paused'):progress('Cancelled the previous paused attempt and queued a new Steam download · partial files retained')
@@ -271,29 +276,44 @@ class SteamQueueRunner(QObject):
                 registered_deadline=time.monotonic()+180
                 seen_events=set(previous_events);samples=[];agreement_check=0;activity_seen=False
                 recovery=PausedRecovery()
-                permission_recovered=False
+                retry_delays=(5,15,30)
+                retries=0;reconnect=False;restart_pending=False
+                def retry_download(reason,*,restart=False):
+                    nonlocal retries,reconnect,restart_pending
+                    if self.cancelled.is_set():raise RuntimeError('Cancelled')
+                    if retries>=len(retry_delays):
+                        raise RuntimeError(f'{reason} · download failed after {retries} automatic retries')
+                    delay=retry_delays[retries];retries+=1
+                    progress(f'{reason} · retry {retries}/{len(retry_delays)} in {delay} seconds · partial files retained')
+                    if self.cancelled.wait(delay) or self.cancelled.is_set():raise RuntimeError('Cancelled')
+                    reconnect=True;restart_pending=restart_pending or restart
                 while True:
                     if self.cancelled.is_set():raise RuntimeError('Cancelled')
-                    self.network.check()
-                    state=self.runtime.request('download_status',app)
-                    if recovery.needed(state,time.monotonic()):
-                        progress('Steam did not resume after 30 seconds · restarting the stuck attempt with partial files retained')
-                        installation=self.runtime.request('install',app,platform=platform,language=self.snapshot['language'],dlc=self.snapshot['dlc'],recover_paused=True)
-                        previous_events.update(installation.get('previous_events',[]))
-                        registered_deadline=time.monotonic()+180
+                    try:
+                        if reconnect:
+                            ensure_vpn(self.network,country,protocol,progress)
+                            reconnect=False
+                        self.network.check()
+                        if restart_pending:
+                            installation=self.runtime.request('install',app,platform=platform,language=self.snapshot['language'],dlc=self.snapshot['dlc'],recover_paused=True)
+                            previous_events.update(installation.get('previous_events',[]))
+                            registered_deadline=time.monotonic()+180
+                            samples.clear();activity_seen=False;restart_pending=False
+                        state=self.runtime.request('download_status',app)
+                    except (OSError,RuntimeError) as error:
+                        retry_download(str(error))
                         continue
                     current_events=[event for event in state.get('events',[]) if event not in previous_events]
                     activity_seen=activity_seen or bool(current_events) or bool(int(state.get('flags',0)) & 1024) or bool(state.get('export_pending'))
                     failure=download_failure(state,previous_events)
                     if failure:
-                        if 'missing file permissions' in failure.lower() and not permission_recovered:
-                            permission_recovered=True
-                            progress('Repairing temporary download permissions and retrying with partial files retained')
-                            installation=self.runtime.request('install',app,platform=platform,language=self.snapshot['language'],dlc=self.snapshot['dlc'],recover_paused=True)
-                            previous_events.update(state.get('events',[]));previous_events.update(installation.get('previous_events',[]))
-                            registered_deadline=time.monotonic()+180
-                            continue
-                        raise RuntimeError(failure)
+                        retry_download(failure,restart=True)
+                        previous_events.update(state.get('events',[]))
+                        continue
+                    if recovery.needed(state,time.monotonic()):
+                        retry_download('Steam did not resume after 30 seconds',restart=True)
+                        previous_events.update(state.get('events',[]))
+                        continue
                     if not activity_seen and not state.get('installed') and time.monotonic()>registered_deadline:
                         raise RuntimeError('Steam did not start the current installation within three minutes. Check its isolated desktop for a confirmation or error.')
                     if not state.get('installed') and time.monotonic()>=agreement_check:

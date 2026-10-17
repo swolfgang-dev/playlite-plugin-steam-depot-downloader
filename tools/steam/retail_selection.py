@@ -102,7 +102,10 @@ def restrict_depots(home,app,allowed,depots):
         if int(identifier) in allowed:
             restored=cache/('depotkey_'+identifier+'.yaml')
             if not restored.exists():restored.write_bytes((backup/name).read_bytes());restored.chmod(0o600)
-    changed=script.read_text()!=filtered or any(path is not None for path in candidates.values())
+    # Steam can regenerate key-cache files at startup while retaining the
+    # filtered script. Cleaning those files again does not change the loaded
+    # script and must not trigger an endless client-restart cycle.
+    changed=script.read_text()!=filtered
     temporary=script.with_suffix('.playlite-tmp')
     temporary.write_text(filtered);temporary.chmod(0o600);temporary.replace(script)
     for path in candidates.values():

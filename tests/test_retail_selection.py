@@ -33,6 +33,17 @@ class RetailSelectionTests(unittest.TestCase):
             self.assertTrue(result['changed']);self.assertEqual(script.read_text(),original)
             self.assertTrue((cache/'depotkey_12.yaml').exists())
 
+    def test_regenerated_cache_does_not_require_another_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home=Path(directory);script,cache=self.fixture(home)
+            selection.restrict_depots(home,10,{11},{'11':{},'12':{}})
+            filtered=script.read_text()
+            (cache/'depotkey_12.yaml').write_text('appId: 10\ndepotId: 12\nkey: private\n')
+            result=selection.restrict_depots(home,10,{11},{'11':{},'12':{}})
+            self.assertEqual(result,{'excluded':[12],'changed':False})
+            self.assertEqual(script.read_text(),filtered)
+            self.assertFalse((cache/'depotkey_12.yaml').exists())
+
     def test_compound_script_is_rejected_without_partial_changes(self):
         with tempfile.TemporaryDirectory() as directory:
             home=Path(directory);script,cache=self.fixture(home)

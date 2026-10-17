@@ -315,11 +315,102 @@ class SteamQueueTests(unittest.TestCase):
                     runner.dispose()
                 window.close()
 
+class DownloadRetryTests(unittest.TestCase):
+    def run_download(self,statuses,*,cancel_retry=False,network_failures=0):
+        self.app=QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as folder:
+            window=QWidget();queue=DownloadQueue(window,storage=Path(folder)/'queue.json');queue.pump=Mock()
+            row=queue.enqueue('Game',folder,Mock());queue.active=row;row.state='Downloading'
+            network=Mock(is_vm=True,container='vm')
+            runtime=Mock(direct_install=True);runtime.installation_path.return_value=Path(folder)
+            states=iter(statuses);messages=[];installs=[]
+            def request(command,*args,**kwargs):
+                if command=='has_game':return {'exists':True}
+                if command=='retail_selection':return {'restart_required':False}
+                if command=='install':
+                    installs.append(kwargs)
+                    if len(installs)==1 and network_failures:
+                        network.check.side_effect=[RuntimeError('VPN disconnected')]*network_failures+[None]*20
+                    return {}
+                if command=='download_status':
+                    state=next(states)
+                    if isinstance(state,Exception):raise state
+                    return state
+                return {}
+            runtime.request.side_effect=request
+            snapshot={'app':10,'platform':'windows','language':'english','dlc':[],'info':metadata()}
+            with patch('downloader.steam_queue_runner.SteamRuntime',return_value=runtime),patch('downloader.steam_queue_runner.QThreadPool') as pool:
+                pool.globalInstance.return_value.start.side_effect=lambda job:job.run()
+                runner=SteamQueueRunner(network,window,queue,row,snapshot);row.controller=runner
+                runner.cancelled.wait=Mock(return_value=False)
+                def changed():
+                    messages.append(row.status)
+                    if cancel_retry and 'retry 1/3' in row.status:queue.cancel(row)
+                queue.changed.connect(changed)
+                runner.start()
+                outcome=(row.state,row.status,messages,installs,[call.args[0] for call in runner.cancelled.wait.call_args_list])
+                runner.dispose()
+            window.close()
+            return outcome
+
+    @staticmethod
+    def failure(attempt):
+        return {'flags':530,'events':[
+            f'[{attempt}] AppID 10 update canceled : Connection timeout',
+            f'[{attempt}] AppID 10 scheduler finished : removed from schedule (result Timeout, state 0x212)']}
+
+    def test_steam_failure_retries_with_partial_files_and_ignores_stale_events(self):
+        failed=self.failure(1)
+        state,status,messages,installs,waits=self.run_download([
+            failed,failed,{'installed':True,'flags':4,'depots':[11]}])
+        self.assertEqual(state,'Complete')
+        self.assertEqual(len(installs),2)
+        self.assertTrue(installs[1]['recover_paused'])
+        self.assertIn(5,waits)
+        self.assertTrue(any('retry 1/3' in message and 'partial files retained' in message for message in messages))
+
+    def test_repeated_failure_stops_after_three_retries(self):
+        state,status,messages,installs,waits=self.run_download([self.failure(i) for i in range(4)])
+        self.assertEqual(state,'Failed')
+        self.assertIn('after 3 automatic retries',status)
+        self.assertIn('Timeout',status)
+        self.assertEqual(len(installs),4)
+        self.assertEqual(waits,[5,15,30])
+
+    def test_transport_error_recovers_without_restarting_validation(self):
+        state,_,_,installs,waits=self.run_download([
+            OSError('Guest agent unavailable'),{'installed':True,'flags':4,'depots':[11]}])
+        self.assertEqual(state,'Complete')
+        self.assertEqual(len(installs),1)
+        self.assertEqual(waits,[5])
+
+    def test_network_and_steam_errors_share_retry_limit(self):
+        state,status,_,installs,waits=self.run_download([self.failure(i) for i in range(3)],network_failures=1)
+        self.assertEqual(state,'Failed')
+        self.assertIn('after 3 automatic retries',status)
+        self.assertEqual(len(installs),3)
+        self.assertEqual(waits,[5,15,30])
+
+    def test_cancellation_during_backoff_never_restarts_download(self):
+        state,_,_,installs,_=self.run_download([self.failure(1)],cancel_retry=True)
+        self.assertEqual(state,'Cancelled')
+        self.assertEqual(len(installs),1)
+
+
 class VMDirectInstallTests(unittest.TestCase):
     def setUp(self):
         self.app=QApplication.instance() or QApplication([])
 
     def test_completed_vm_install_uses_same_files_and_never_exports_or_uninstalls(self):
+        self.check_completed_install(False)
+
+    def test_restart_reuses_initial_retail_package_snapshot(self):
+        self.check_completed_install(True)
+
+    def test_startup_metadata_refresh_retries_with_same_snapshot(self):
+        self.check_completed_install(2)
+
+    def check_completed_install(self,restart):
         with tempfile.TemporaryDirectory() as folder:
             source=Path(folder)/'Steam Folder';source.mkdir();(source/'game.exe').write_bytes(b'verified')
             window=QWidget();queue=DownloadQueue(window,storage=Path(folder)/'queue.json');queue.pump=Mock()
@@ -327,9 +418,14 @@ class VMDirectInstallTests(unittest.TestCase):
             network=Mock(is_vm=True,container='vm')
             runtime=Mock(direct_install=True)
             runtime.installation_path.return_value=source
+            selections=[]
             def request(command,*args,**kwargs):
                 if command=='has_game':return {'exists':True}
-                if command=='retail_selection':return {'restart_required':False}
+                if command=='retail_selection':
+                    selections.append(kwargs)
+                    if len(selections)>1:self.assertEqual(kwargs,{'packages':[42]})
+                    return {'restart_required':len(selections)<=int(restart),'packages':[42]}
+                if command=='status':return {'steam_running':False}
                 if command=='download_status':return {'installed':True,'flags':4,'directory':'steamapps/common/Steam Folder','depots':[11]}
                 return {}
             runtime.request.side_effect=request
