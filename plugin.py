@@ -548,12 +548,16 @@ class Plugin(GenericPlugin):
         job.signals.finished.connect(finished)
         QThreadPool.globalInstance().start(job)
 
-    def save_settings(self, widget):
+    def validate_settings(self, widget):
         preferences = Preferences(widget.country.text().strip(), widget.protocol.currentText()).validate()
-        settings = self.settings()
         value = widget.download_root.text().strip()
         root = Path(value).expanduser() if value else None
         if root is not None and not root.is_absolute():raise ValueError('Choose an absolute default download location.')
+        return preferences, value, root
+
+    def save_settings(self, widget):
+        preferences, value, root = self.validate_settings(widget)
+        settings = self.settings()
         if getattr(self.network,'is_vm',False) is True and (self.network.profile/'vm.json').exists():
             if root is None:
                 from .download_location import general_download_root
