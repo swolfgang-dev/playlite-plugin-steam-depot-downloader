@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location('retail_selection',Path(__file__).resolve().parents[1]/'tools/steam/retail_selection.py')
 selection=importlib.util.module_from_spec(spec);spec.loader.exec_module(selection)
@@ -62,3 +63,21 @@ class RetailSelectionTests(unittest.TestCase):
             for identifier in (10,20,30):
                 self.assertTrue((cache/f'depotkey_{identifier}.yaml').exists())
                 self.assertIn(f'addappid({identifier})',script.read_text())
+
+    def test_failed_ledger_commit_restores_script_and_removed_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            script, cache = self.fixture(home)
+            original = script.read_bytes()
+            key = cache / 'depotkey_12.yaml'
+            original_key = key.read_bytes()
+            write = selection.atomic_bytes
+            def fail_ledger(path, content, mode=0o600):
+                if path.name == 'selection.json':raise OSError('disk full')
+                return write(path, content, mode)
+            with patch.object(selection, 'atomic_bytes', side_effect=fail_ledger):
+                with self.assertRaisesRegex(OSError, 'disk full'):
+                    selection.restrict_depots(home, 10, {11}, {'11': {}, '12': {}})
+            self.assertEqual(script.read_bytes(), original)
+            self.assertEqual(key.read_bytes(), original_key)
+            self.assertFalse(list(home.rglob('.playlite-selection-*')))

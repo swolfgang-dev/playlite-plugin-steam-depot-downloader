@@ -217,3 +217,25 @@ class SetupTests(unittest.TestCase):
         self.assertIn('waiting for the VPN',dialog.steam_status.text())
         self.assertNotIn('unavailable',dialog.log.toPlainText())
         dialog.hide();dialog.deleteLater()
+
+
+class MoonBridgeTests(unittest.TestCase):
+    def test_control_path_is_quoted_and_reinstall_keeps_one_lifecycle(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('review_moon_setup',
+            Path(__file__).resolve().parents[1] / 'tools/steam/setup_moon.py')
+        setup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(setup)
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            main = home / '.local/share/Lumen/luatools/backend/main.lua'
+            main.parent.mkdir(parents=True)
+            main.write_text('local cjson = {}\nreturn { on_tick = function() end }\n')
+            control = home / "control's quoted folder"
+            setup.install_bridge(home, control)
+            first = main.read_bytes()
+            self.assertIn(json.dumps(str(control / 'moon-request.json')).encode(), first)
+            setup.install_bridge(home, control)
+            self.assertEqual(main.read_bytes(), first)
+            self.assertEqual(first.count(setup.MARKER.encode()), 1)
+            self.assertFalse(list(main.parent.glob('.playlite-bridge-*')))

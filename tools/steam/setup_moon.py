@@ -1,5 +1,9 @@
-"""Install pinned Moon and attach Playlite's bounded LuaMoon mailbox."""
+"""Install Moon from the pinned recipe and attach Playlite's bounded LuaMoon mailbox."""
 import os
+import json
+import re
+import stat
+import tempfile
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,12 +29,24 @@ def install_bridge(home=None, control=None):
         source = source[:offset] + source[offset:].replace('\nreturn {', '\nlocal lifecycle = {', 1)
     bridge = (ASSETS / 'moon_bridge.lua').read_text()
     if control is not None:
-        bridge = bridge.replace('/control/', str(Path(control)) + '/')
-    updated = source + '\n' + MARKER + '\n' + bridge
+        control = Path(control)
+        if not control.is_absolute() or any(ord(character) < 32 for character in str(control)):
+            raise ValueError('The Moon control directory must be an absolute path without control characters.')
+        bridge = re.sub(r"'/control/([^']+)'",
+                        lambda match: json.dumps(str(control / match[1]), ensure_ascii=False), bridge)
+    updated = source.rstrip() + '\n\n' + MARKER + '\n' + bridge
     if main.read_text() != updated:
-        temporary = main.with_suffix('.playlite-tmp')
-        temporary.write_text(updated)
-        temporary.replace(main)
+        descriptor, name = tempfile.mkstemp(prefix='.playlite-bridge-', dir=main.parent)
+        temporary = Path(name)
+        try:
+            with os.fdopen(descriptor, 'w') as stream:
+                stream.write(updated)
+                stream.flush()
+                os.fchmod(stream.fileno(), stat.S_IMODE(main.stat().st_mode))
+                os.fsync(stream.fileno())
+            temporary.replace(main)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 if __name__ == '__main__':

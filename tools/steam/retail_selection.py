@@ -1,6 +1,9 @@
 """Restrict integration-provided depots to public retail package membership."""
 import hashlib
 import json
+import os
+import stat
+import tempfile
 from pathlib import Path
 import re
 import urllib.request
@@ -52,6 +55,8 @@ def restrict_depots(home,app,allowed,depots):
         digest=previous.get('original_sha256','')
         if not re.fullmatch('[0-9a-f]{64}',digest):raise RuntimeError('Invalid original depot selection record.')
         source=(backup/(digest+'.lua')).read_text()
+        if hashlib.sha256(source.encode()).hexdigest() != digest:
+            raise RuntimeError('The original depot selection changed; it was retained for review.')
     if len(source)>1048576:raise RuntimeError('LuaMoon game script exceeds the selection limit.')
     # Shared dependencies and DLC retain their separate Steam selection rules.
     # App IDs appearing in a provider script must never be treated as depots.
@@ -69,8 +74,11 @@ def restrict_depots(home,app,allowed,depots):
         identifier=int(match[1])
         if identifier in eligible and identifier not in allowed:candidates.setdefault(identifier,None)
     saved_keys=previous.get('keys',{}) if restoring else {}
+    if not isinstance(saved_keys, dict):raise RuntimeError('Invalid saved depot key record.')
     for identifier,name in saved_keys.items():
-        if not re.fullmatch(r'depotkey_\d+\.yaml-[0-9a-f]{64}',name):raise RuntimeError('Invalid saved depot key record.')
+        if not isinstance(identifier,str) or not re.fullmatch('[0-9]+',identifier) or not isinstance(name,str):
+            raise RuntimeError('Invalid saved depot key record.')
+        if not re.fullmatch(r'depotkey_'+re.escape(identifier)+r'\.yaml-[0-9a-f]{64}',name):raise RuntimeError('Invalid saved depot key record.')
         if int(identifier) in eligible and int(identifier) not in allowed:candidates.setdefault(int(identifier),None)
     if not candidates and not restoring:return {'excluded':[],'changed':False}
 
@@ -98,19 +106,57 @@ def restrict_depots(home,app,allowed,depots):
             saved=backup/(path.name+'-'+hashlib.sha256(path.read_bytes()).hexdigest())
             if not saved.exists():saved.write_bytes(path.read_bytes());saved.chmod(0o600)
             saved_keys[str(identifier)]=saved.name
+    changes = {}
     for identifier,name in saved_keys.items():
         if int(identifier) in allowed:
             restored=cache/('depotkey_'+identifier+'.yaml')
-            if not restored.exists():restored.write_bytes((backup/name).read_bytes());restored.chmod(0o600)
-    # Steam can regenerate key-cache files at startup while retaining the
-    # filtered script. Cleaning those files again does not change the loaded
-    # script and must not trigger an endless client-restart cycle.
+            if not restored.exists():
+                content=(backup/name).read_bytes()
+                if hashlib.sha256(content).hexdigest() != name.rsplit('-',1)[1]:
+                    raise RuntimeError('A saved depot key changed; selection was not updated.')
+                changes[restored]=content
+    # Include the script, keys and ledger in one compensating transaction.
     changed=script.read_text()!=filtered
-    temporary=script.with_suffix('.playlite-tmp')
-    temporary.write_text(filtered);temporary.chmod(0o600);temporary.replace(script)
+    changes[script]=filtered.encode()
     for path in candidates.values():
-        if path is not None:path.unlink()
-    temporary=ledger.with_suffix('.tmp')
-    temporary.write_text(json.dumps({'original_sha256':digest,'filtered_sha256':hashlib.sha256(filtered.encode()).hexdigest(),'keys':saved_keys}))
-    temporary.chmod(0o600);temporary.replace(ledger)
+        if path is not None:changes[path]=None
+    changes[ledger]=json.dumps({'original_sha256':digest,'filtered_sha256':hashlib.sha256(filtered.encode()).hexdigest(),'keys':saved_keys}).encode()
+    commit_files(changes)
     return {'excluded':sorted(candidates),'changed':changed}
+
+
+def atomic_bytes(path, content, mode=0o600):
+    descriptor, name = tempfile.mkstemp(prefix='.playlite-selection-', dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(content)
+            stream.flush()
+            os.fchmod(stream.fileno(), mode)
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def commit_files(changes):
+    previous = {}
+    for path in changes:
+        if path.is_symlink():
+            raise RuntimeError('Depot selection files cannot be symlinks.')
+        previous[path] = (path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) if path.exists() else (None, 0o600)
+    written = []
+    try:
+        for path, content in changes.items():
+            if content is None:path.unlink()
+            else:atomic_bytes(path, content)
+            written.append(path)
+    except Exception:
+        for path in reversed(written):
+            current = path.read_bytes() if path.exists() else None
+            if path.is_symlink() or current != changes[path]:
+                continue  # Retain a later edit rather than overwrite it.
+            content, mode = previous[path]
+            if content is None:path.unlink(missing_ok=True)
+            else:atomic_bytes(path, content, mode)
+        raise
