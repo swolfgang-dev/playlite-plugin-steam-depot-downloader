@@ -225,6 +225,27 @@ class Network:
                 '--mount', f'type=bind,src={path},dst=/etc/resolv.conf,readonly',
                 '--entrypoint', '/bin/sh', IMAGE, '-c', command]
 
+    def user_probe_args(self, command):
+        """Run Wine with the desktop UID, guarded by the same tunnel-only chain."""
+        uid=os.getuid();gid=os.getgid()
+        if uid==0:raise RuntimeError('Do not run game processing as root.')
+        self.check()
+        rule=['-m','owner','--uid-owner',str(uid),'-j','PLAYLITE_WORKER']
+        # Inserting only in this owned gateway leaves the host firewall alone.
+        expected=f'-A OUTPUT -m owner --uid-owner {uid} -j PLAYLITE_WORKER'
+        existing=self.docker('exec',self.container,'iptables','-S','OUTPUT').splitlines()
+        current=[line for line in existing if line.startswith('-A ')]
+        if len(current)<2 or current[1]!=expected:
+            self.docker('exec',self.container,'iptables','-I','OUTPUT','2',*rule)
+        self.docker('exec',self.container,'iptables','-C','OUTPUT',*rule)
+        output=self.docker('exec',self.container,'iptables','-S','OUTPUT').splitlines()
+        rules=[line for line in output if line.startswith('-A ')]
+        if len(rules)<2 or rules[1]!=expected:
+            raise RuntimeError('The game-processing VPN firewall could not be verified.')
+        args=self.probe_args(command)
+        args[args.index('--user')+1]=f'{uid}:{gid}'
+        return args
+
     def connected_server(self):
         """Read the server identified by the latest established OpenVPN peer."""
         import re

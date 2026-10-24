@@ -17,13 +17,13 @@ with ZipFile(archive, 'w', ZIP_DEFLATED) as bundle:
     for name in sorted(set(filter(None, tracked))):
         relative = Path(name)
         path = root / relative
-        if relative.parts[0] == 'tools' and (len(relative.parts) < 2 or relative.parts[1] not in ('steam', 'worker', 'vm', 'build_worker.py', 'appinfo_patch.py')):
+        if relative.parts[0] == 'tools' and (len(relative.parts) < 2 or relative.parts[1] not in ('steam', 'worker', 'vm', 'build_worker.py', 'appinfo_patch.py', 'preflight_patch.py')):
             continue
         if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(root.resolve()) and not any(part in ('.git', '.github', 'dist', '__pycache__', 'tests', '.venv') for part in relative.parts):
             bundle.write(path, str(relative))
 with ZipFile(archive) as bundle:
     required = ('manifest.json', 'plugin.py', 'steam_setup.py', 'environment_uninstall.py',
-                'depot_setup.py', 'queue_runner.py', 'tools/build_worker.py', 'tools/appinfo_patch.py', 'tools/worker/Dockerfile',
+                'depot_setup.py', 'queue_runner.py', 'tools/build_worker.py', 'tools/appinfo_patch.py', 'tools/preflight_patch.py', 'tools/worker/Dockerfile',
                 'tools/steam/Dockerfile', 'tools/steam/bridge.py', 'tools/steam/seccomp.json',
                 'tools/steam/setup_moon.py', 'tools/steam/moon_bridge.lua',
                 'tools/steam/steam_control.lua', 'tools/steam/retail_selection.py',

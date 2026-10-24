@@ -56,6 +56,14 @@ def apply(source):
         s=s.replace(marker,'                ContentDownloader.PlaylitePreflight = HasParameter(args, "-playlite-preflight");\n'+marker)
         p.write_text(s)
     p=source/'ContentDownloader.cs';s=p.read_text()
+    if 'playlite-depot-manifests' not in s:
+        marker='            if (Config.DownloadManifestOnly)'
+        if marker not in s:raise RuntimeError('Worker manifest section changed.')
+        s=s.replace(marker,'''            var playliteManifests = "/output/.playlite-depot-manifests";
+            Directory.CreateDirectory(playliteManifests);
+            newManifest.SaveToFile(Path.Combine(playliteManifests, $"{depot.DepotId}_{depot.ManifestId}.manifest"));
+'''+marker)
+        p.write_text(s)
     if 'public static bool PlaylitePreflight;' not in s:
         marker='        private static async Task DownloadSteam3Async(List<DepotDownloadInfo> depots)'
         if marker not in s:raise RuntimeError('Worker CDN section changed.')

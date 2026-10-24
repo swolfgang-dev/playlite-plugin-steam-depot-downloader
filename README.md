@@ -39,6 +39,10 @@ New jobs require an empty destination.
 
 Each job loads current Steam depot/package metadata, resolves exact manifest
 versions, checks a CDN sample, then downloads and validates the selected depots.
+Completed downloads retain their decrypted manifest metadata and exact installed
+depot selection in `.playlite-depot-manifests` for SteamAutoCrack's verified
+original-file backups. This metadata contains no depot keys or login tokens.
+Rebuild the worker after updating to 0.1.18; old worker images do not export it.
 Missing manifests or failed authentication/CDN checks stop the job. Workers are
 unprivileged and share the verified VPN gateway; the tunnel-only firewall blocks
 traffic outside the VPN. The VM/desktop runtime is never started.

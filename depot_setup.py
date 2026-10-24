@@ -9,8 +9,8 @@ import tempfile
 from PyQt6.QtCore import QSettings, QThreadPool, Qt
 from PyQt6 import sip
 from PyQt6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QFormLayout, QLabel,
-                            QPushButton, QLineEdit, QComboBox, QCheckBox, QFileDialog, QScrollArea, QGroupBox, QHBoxLayout, QSizePolicy)
-from .tools.build_worker import REVISION
+                            QPushButton, QLineEdit, QComboBox, QCheckBox, QFileDialog, QScrollArea, QGroupBox, QHBoxLayout, QSizePolicy, QPlainTextEdit)
+from .tools.build_worker import REVISION, RECIPE
 from .credentials import Wallet
 from .settings import Preferences
 
@@ -23,6 +23,8 @@ def require_worker():
         if result.returncode:raise ValueError('missing')
         info=json.loads(result.stdout)[0]
         if info['Config'].get('Labels',{}).get('io.playlite.depot-worker.revision')!=REVISION:
+            raise ValueError('outdated')
+        if info['Config'].get('Labels',{}).get('io.playlite.depot-worker.recipe')!=str(RECIPE):
             raise ValueError('outdated')
     except (OSError,subprocess.TimeoutExpired,ValueError,KeyError,IndexError,TypeError):
         raise RuntimeError('Build the depot worker in Settings → Plugins → Steam Downloader → Build worker.') from None
@@ -38,9 +40,9 @@ def build_worker(progress):
     # images remain; no host SDK, Steam client or VM is installed.
     with tempfile.TemporaryDirectory(prefix='playlite-worker-build-') as work:
         result=subprocess.run([sys.executable,str(script),'--work',work,'--container-sdk'],
-                              capture_output=True,text=True,timeout=1800)
+                              stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=1800)
         if result.returncode:
-            raise RuntimeError('Worker build failed: '+(result.stderr or result.stdout)[-3000:])
+            raise RuntimeError('Worker build failed:\n'+(result.stdout or 'The build exited without diagnostic output.')[-12000:])
     return require_worker()
 
 
@@ -136,6 +138,15 @@ class DepotSettings(QWidget):
         self.status.setWordWrap(True)
         self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.status)
+        self.details_button=QPushButton('Show details');self.details_button.setCheckable(True)
+        self.details_button.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
+        self.details_button.hide();layout.addWidget(self.details_button)
+        self.details=QPlainTextEdit();self.details.setReadOnly(True)
+        self.details.setMaximumHeight(180);self.details.hide();layout.addWidget(self.details)
+        def show_details(visible):
+            self.details.setVisible(visible)
+            self.details_button.setText('Hide details' if visible else 'Show details')
+        self.details_button.toggled.connect(show_details)
         layout.addStretch()
         owner=self.window()
         if isinstance(owner,QDialog):owner.finished.connect(self.closed)
@@ -149,6 +160,14 @@ class DepotSettings(QWidget):
     def shutdown_pending(self):return self.busy or bool(self.jobs)
 
     def request_shutdown(self):self.network.cancel()
+
+    def validate(self):
+        preferences=Preferences(self.country.text().strip(),self.protocol.currentText()).validate()
+        value=self.root.text().strip()
+        root=Path(value).expanduser() if value else None
+        if root is not None and not root.is_absolute():
+            raise ValueError('Choose an absolute default download location.')
+        return preferences,value,root
 
     def save(self,*_):
         self.settings.setValue('country',self.country.text().strip())
@@ -171,7 +190,11 @@ class DepotSettings(QWidget):
         def done(message):
             self.busy=False;self.jobs.discard(job)
             if not sip.isdeleted(self):
-                self.status.setText(str(message))
+                text=str(message)
+                detailed='\n' in text or len(text)>500
+                self.details.setPlainText(text if detailed else '')
+                self.details_button.setChecked(False);self.details_button.setVisible(detailed)
+                self.status.setText(text.splitlines()[0]+' Open details for the full output.' if detailed else text)
                 for button in self.buttons:button.setEnabled(True)
             if sip.isdeleted(self) or self.settings_closed:
                 from .vpn_lifecycle import disconnect_when_idle

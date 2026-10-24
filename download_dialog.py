@@ -620,48 +620,50 @@ class DownloadDialog(QDialog):
         parent=self.parentWidget()
         if not parent or not hasattr(parent,'data'):
             self.status.setText('Open this downloader from the Playlite menu to add a game.');return
-        from playlite.lifecycle import choose_file
-        from .download_flow import primary_windows_executable
-        executable=primary_windows_executable(self.destination.text()) if self.depot.currentData()!='linux' else None
-        if not executable:
-            executable,_=choose_file(self,'Choose the game executable',self.destination.text(),
-                                    'Game executables (*.exe *.sh *.AppImage);;All files (*)')
-        if not executable:return
-        from playlite.add_game import AddGameEditor, notify_game_added
-        from playlite.game_storage import save_game
-        game={'Id':str(uuid.uuid4()),'Name':self.game_name,'InstallDirectory':self.destination.text(),
-              'Executable':executable,'Platforms':[],'IsInstalled':True,'MetadataIds':{'SteamMetadata':str(self.game_app())}}
-        installation_method=None
-        if Path(executable).suffix.lower()=='.exe':
-            from playlite.providers import discover_plugins
-            from .download_flow import suggested_wine_prefix
-            lutris=discover_plugins().get('LutrisIntegration')
-            if lutris is not None:installation_method='LutrisAdd'
-            defaults=lutris.directory_defaults() if lutris is not None else {}
-            prefix_root=defaults.get('Prefix') or str(parent.data/'prefixes')
-            game['Prefix']=str(suggested_wine_prefix(game['InstallDirectory'],prefix_root))
-        dialog=AddGameEditor(executable,parent.data,self,game=game,installation_method=installation_method)
-        if game.get('Prefix'):
-            def prefill_prefix(*_):
-                field=dialog.fields.get('Prefix')
-                if field is not None and not field.text().strip():
-                    field.setText(game['Prefix'])
-            prefill_prefix()
-            dialog.installation_method.currentIndexChanged.connect(prefill_prefix)
-        from playlite.lifecycle import run_dialog
         try:
-            while run_dialog(dialog)==QDialog.DialogCode.Accepted:
-                try:
-                    parent.games=dialog.persist(lambda game:save_game(parent.data,parent.games,game))
-                except Exception as error:
-                    dialog.error.setText('Could not save the Playlite entry: '+str(error))
-                    continue
-                parent.focus_added_game(dialog.result_game['Id'])
-                notify_game_added(parent, dialog)
-                self.status.setText('Game added to Playlite.')
-                return dialog.result_game['Id']
-        finally:
-            for cache in dialog.download_caches:cache.cleanup()
+            from playlite.lifecycle import choose_file,run_dialog
+            from .download_flow import primary_windows_executable
+            from playlite.lutris_library import import_entry
+            database=parent.settings.value('lutris/libraryDatabase','',type=str)
+            directory=Path(self.destination.text()).expanduser().resolve()
+            if self.depot.currentData()=='linux':
+                from playlite.lutris_import import LutrisImportDialog
+                dialog=LutrisImportDialog(parent.games,database,self)
+                dialog.setWindowTitle('Choose this download’s Lutris entry')
+                dialog.status.setText('Add the Linux game to Lutris first, then select its entry here.')
+                if run_dialog(dialog)!=QDialog.DialogCode.Accepted or not dialog.selected_entry:return
+                entry=dialog.selected_entry
+                if not entry.get('directory') or Path(entry['directory']).resolve()!=directory:
+                    raise ValueError('Choose the Lutris entry for this downloaded game folder.')
+                games,identity=import_entry(parent.data,parent.games,entry['database'],entry['id'],
+                                            metadata_ids={'SteamMetadata':str(self.game_app())})
+                database=entry['database']
+            else:
+                from playlite.lutris_add_dialog import AddExecutableDialog
+                from playlite.lutris_add import register_executable
+                executable=primary_windows_executable(directory)
+                if not executable:
+                    executable,_=choose_file(self,'Choose the game executable',str(directory),'Windows executables (*.exe *.EXE)')
+                if not executable:return
+                if not Path(executable).resolve().is_relative_to(directory):
+                    raise ValueError('Choose an executable inside the downloaded game folder.')
+                dialog=AddExecutableDialog(executable,parent.data,database,self,steam_id=str(self.game_app()))
+                dialog.name.setText(self.game_name or directory.name)
+                dialog.directory.setText(str(directory))
+                if run_dialog(dialog)!=QDialog.DialogCode.Accepted or dialog.result_plan is None:return
+                with register_executable(dialog.result_plan) as action:
+                    games,identity=import_entry(parent.data,parent.games,action['LutrisDatabase'],action['GameId'],
+                                                metadata_ids={'SteamMetadata':str(self.game_app())})
+                database=action['LutrisDatabase']
+            parent.games=games
+            parent.settings.setValue('lutris/libraryDatabase',str(database))
+            parent.focus_added_game(identity)
+            self.status.setText('Game added to Lutris and Playlite.')
+            return identity
+        except Exception as error:
+            import logging
+            logging.exception('Could not add downloaded game through Lutris')
+            self.status.setText('Could not add game: '+str(error))
 
     def connect_vpn(self,automatic=False):
         if self.busy:return
@@ -1194,6 +1196,13 @@ class DownloadDialog(QDialog):
                     self.content_index += 1
                     continue_download = True
                 else:
+                    if getattr(self.network,'is_depot',False) is True:
+                        from playlite.storage import atomic_json
+                        manifests=self.download_staging/'.playlite-depot-manifests'
+                        depots={str(row.id):str(row.manifest) for _,row,_ in self.content_plan}
+                        if not depots or any(not (manifests/f'{depot}_{manifest}.manifest').is_file() for depot,manifest in depots.items()):
+                            raise ValueError('The worker did not retain installed-build manifests. Rebuild the worker and retry.')
+                        atomic_json(manifests/'installed.json',{'AppId':str(self.pack_app),'Depots':depots})
                     finalize_download(self.download_destination,self.download_staging)
                     continue_download = False
                 if continue_download:

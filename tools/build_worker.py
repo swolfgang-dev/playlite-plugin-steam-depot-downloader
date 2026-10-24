@@ -13,6 +13,7 @@ import subprocess
 
 REPOSITORY = 'https://github.com/SteamAutoCracks/DepotDownloaderMod.git'
 REVISION = 'c0f62fb7f020087f36ae76adfc51fde1446af344'
+RECIPE = 2
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -76,6 +77,7 @@ def main():
                    'mcr.microsoft.com/dotnet/sdk:10.0.100-alpine3.22', 'dotnet', *command[1:]]
     subprocess.run(command, cwd=source, check=True)
     subprocess.run(['docker', 'build', '--label', 'io.playlite.depot-worker.revision=' + REVISION,
+                    '--label', 'io.playlite.depot-worker.recipe=' + str(RECIPE),
                     '-t', args.image, str(context)], check=True)
 
 if __name__ == '__main__': main()

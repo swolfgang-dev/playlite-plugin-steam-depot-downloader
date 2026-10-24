@@ -3,6 +3,9 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
+from zipfile import ZipFile
 import unittest
 from unittest.mock import Mock,patch
 import test_worker
@@ -14,7 +17,7 @@ from downloader.download_dialog import DownloadDialog
 from downloader.network import Network
 from downloader.plugin import Plugin
 from downloader.queue_runner import QueueRunner,validate_snapshot
-from downloader.depot_setup import DepotSettings,require_worker,REVISION
+from downloader.depot_setup import DepotSettings,require_worker,REVISION,RECIPE,build_worker
 from downloader.manifest_resolver import ManifestResolver
 from downloader.providers import Depot
 from test_app_info import fixture
@@ -45,11 +48,44 @@ class DepotBackendTests(unittest.TestCase):
             self.assertIsInstance(plugin.create_settings(),DepotSettings)
             vm.assert_not_called()
 
+    def test_settings_save_uses_depot_controls_without_legacy_steam_fields(self):
+        plugin=Plugin.__new__(Plugin);plugin.network=self.network()
+        widget=plugin.create_settings()
+        widget.root.setText('/games/downloads')
+        widget.keep_vpn.setChecked(True)
+        widget.provider.setCurrentIndex(1)
+        plugin.validate_settings(widget)
+        plugin.save_settings(widget)
+        self.assertEqual(widget.settings.value('download_root'),'/games/downloads')
+        self.assertEqual(widget.settings.value('manifest_provider'),'Luie')
+        self.assertTrue(widget.settings.value('keep_vpn_open',type=bool))
+        self.assertFalse(hasattr(widget,'keep_steam_open'))
+
+    def test_invalid_depot_download_folder_is_rejected_before_save(self):
+        plugin=Plugin.__new__(Plugin);plugin.network=self.network()
+        widget=plugin.create_settings();widget.root.setText('relative/path')
+        with patch.object(widget,'save') as save:
+            with self.assertRaisesRegex(ValueError,'absolute'):plugin.save_settings(widget)
+        save.assert_not_called()
+
     def test_worker_requires_pinned_revision(self):
-        with patch('downloader.depot_setup.subprocess.run',return_value=Mock(returncode=0,stdout=json.dumps([{'Config':{'Labels':{'io.playlite.depot-worker.revision':REVISION}}}]))):
+        with patch('downloader.depot_setup.subprocess.run',return_value=Mock(returncode=0,stdout=json.dumps([{'Config':{'Labels':{'io.playlite.depot-worker.revision':REVISION,'io.playlite.depot-worker.recipe':str(RECIPE)}}}]))):
             self.assertIn('ready',require_worker())
         with patch('downloader.depot_setup.subprocess.run',return_value=Mock(returncode=0,stdout='[{"Config":{"Labels":{}}}]')):
             with self.assertRaisesRegex(RuntimeError,'Build the depot worker'):require_worker()
+
+    def test_build_failure_keeps_compiler_output(self):
+        with patch('downloader.depot_setup.shutil.which',return_value='/tool'),patch('downloader.depot_setup.subprocess.run',return_value=Mock(returncode=1,stdout='Git checkout complete\nCompiler error CS1234')) as run:
+            with self.assertRaisesRegex(RuntimeError,'Compiler error CS1234'):build_worker(Mock())
+        self.assertEqual(run.call_args.kwargs['stderr'],subprocess.STDOUT)
+
+    def test_release_contains_all_worker_build_helpers(self):
+        root=Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run([sys.executable,str(root/'tools/build_release.py'),'--output',directory],check=True,capture_output=True)
+            with ZipFile(Path(directory)/'plugin.zip') as archive:
+                for name in ('tools/build_worker.py','tools/appinfo_patch.py','tools/preflight_patch.py'):
+                    self.assertIn(name,archive.namelist())
 
     def test_selection_uses_worker_metadata_without_steam_desktop(self):
         dialog=DownloadDialog(self.network())
@@ -131,3 +167,33 @@ class DepotBackendTests(unittest.TestCase):
             with patch('downloader.download_flow.finalize_download') as finalize:
                 runner.finished(0)
             finalize.assert_not_called();self.assertEqual(row.state,'Paused');queue.shutdown()
+
+    def test_completed_download_retains_exact_installed_depot_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner,queue,row=self.runner(directory)
+            runner.read_output=Mock();runner.started_at=0
+            runner.output='Total downloaded: 10 bytes (20 bytes uncompressed) from 1 depots'
+            runner.content_plan=[(10,Depot(11,1,b'manifest'),'Game')]
+            runner.download_destination=Path(row.destination);runner.download_destination.mkdir()
+            runner.download_staging=runner.download_destination/'.playlite-download';runner.download_staging.mkdir()
+            manifests=runner.download_staging/'.playlite-depot-manifests';manifests.mkdir()
+            (manifests/'11_1.manifest').write_bytes(b'decrypted manifest')
+            runner.finished(0)
+            self.assertEqual(row.state,'Complete')
+            saved=runner.download_destination/'.playlite-depot-manifests/installed.json'
+            self.assertEqual(json.loads(saved.read_text()),{'AppId':'10','Depots':{'11':'1'}})
+            queue.shutdown()
+
+    def test_desktop_uid_worker_requires_verified_tunnel_guard(self):
+        network=self.network()
+        uid=os.getuid()
+        output=f'-A OUTPUT -m owner --uid-owner 65534 -j PLAYLITE_WORKER\n-A OUTPUT -m owner --uid-owner {uid} -j PLAYLITE_WORKER'
+        network.docker=Mock(return_value=output)
+        with tempfile.TemporaryDirectory() as directory:
+            network.directory=directory
+            args=network.user_probe_args('')
+        self.assertEqual(args[args.index('--user')+1],f'{uid}:{os.getgid()}')
+        self.assertIn('container:verified-gateway',args)
+        self.assertTrue(any(call.args[2:5]==('iptables','-C','OUTPUT') for call in network.docker.call_args_list))
+        network.docker=Mock(return_value='-A OUTPUT -j ACCEPT')
+        with self.assertRaisesRegex(RuntimeError,'firewall'):network.user_probe_args('')

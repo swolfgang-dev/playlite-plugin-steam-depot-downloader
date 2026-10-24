@@ -599,6 +599,8 @@ class Plugin(GenericPlugin):
         QThreadPool.globalInstance().start(job)
 
     def validate_settings(self, widget):
+        if getattr(self.network,'is_depot',False) is True:
+            return widget.validate()
         preferences = Preferences(widget.country.text().strip(), widget.protocol.currentText()).validate()
         value = widget.download_root.text().strip()
         root = Path(value).expanduser() if value else None
@@ -606,6 +608,11 @@ class Plugin(GenericPlugin):
         return preferences, value, root
 
     def save_settings(self, widget):
+        if getattr(self.network,'is_depot',False) is True:
+            self.validate_settings(widget)
+            widget.save()
+            widget.settings.sync()
+            return
         preferences, value, root = self.validate_settings(widget)
         settings = self.settings()
         if getattr(self.network,'is_vm',False) is True and (self.network.profile/'vm.json').exists():
