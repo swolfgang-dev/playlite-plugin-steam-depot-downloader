@@ -4,6 +4,7 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -11,9 +12,9 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       QT_QPA_PLATFORM: offscreen
-      XDG_DATA_HOME: ${{ runner.temp }}/playlite-test-data
-      XDG_CONFIG_HOME: ${{ runner.temp }}/playlite-test-config
-      XDG_STATE_HOME: ${{ runner.temp }}/playlite-test-state
+      XDG_DATA_HOME: ${{ github.workspace }}/playlite-test-data
+      XDG_CONFIG_HOME: ${{ github.workspace }}/playlite-test-config
+      XDG_STATE_HOME: ${{ github.workspace }}/playlite-test-state
       PYTHONFAULTHANDLER: '1'
       PLAYLITE_STEAM_BACKEND: docker
     defaults:
