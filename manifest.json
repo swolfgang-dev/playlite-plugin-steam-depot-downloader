@@ -1,14 +1,14 @@
 {
   "id": "SteamDepotDownloader",
   "name": "Steam Downloader",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "api_version": 1,
   "type": "generic",
   "enabled": true,
   "installation_hooks": true,
   "repository": "swolfgang-dev/playlite-plugin-steam-depot-downloader",
   "minimum_playlite_version": "0.2.88",
-  "description": "Download games through a private Steam VM with LuaTools, LuaMoon, shared storage, and NordVPN networking.",
+  "description": "Download Steam depot content directly in Playlite using Hubcap, LuaTools, and an isolated NordVPN connection.",
   "settings_groups": [
     "SteamDownloader"
   ],

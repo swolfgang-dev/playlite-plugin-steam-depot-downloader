@@ -5,8 +5,11 @@ from .providers import SOURCES
 
 
 class ManifestResolver:
-    def __init__(self,preferred,fetch,progress=lambda message:None,limit=128):
-        self.providers=[preferred,*[source for source in SOURCES if source!=preferred]]
+    def __init__(self,preferred,fetch,progress=lambda message:None,limit=128,providers=None):
+        sources=list(SOURCES if providers is None else providers)
+        if preferred not in sources or any(source not in SOURCES for source in sources):
+            raise ValueError('Select a supported manifest provider.')
+        self.providers=[preferred,*[source for source in sources if source!=preferred]]
         self.fetch=fetch;self.progress=progress;self.limit=limit
         self.cache={};self.errors={};self.used={};self.requests=0
 

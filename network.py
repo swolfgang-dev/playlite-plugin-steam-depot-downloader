@@ -1,4 +1,4 @@
-"""Dedicated OpenVPN namespace. No game download implementation in this milestone."""
+"""Dedicated OpenVPN namespace shared by unprivileged download workers."""
 import json
 import os
 from pathlib import Path
@@ -31,6 +31,7 @@ class AuthenticationRejected(ConnectionAttemptFailed):
 
 
 class Network:
+    is_depot = False
     def __init__(self):
         self.name = 'playlite-steam-downloader-vpn-' + str(os.getuid()) + PROFILE_SUFFIX
         self.directory = None

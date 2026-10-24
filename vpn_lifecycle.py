@@ -63,12 +63,13 @@ def disconnect_when_idle(network,release_session=False):
     if vars(network).get('_disconnect_job') is not None:return
     network.disconnect_pending=False
     keep_steam,keep_vpn=(False,False) if release_session else session_preferences()
+    if getattr(network,'is_depot',False) is True:keep_steam=False
     if keep_steam:return  # Steam depends on the isolated VPN namespace.
     if not keep_vpn:network.cancel()
     from .plugin import Job
     def disconnect():
         if keep_vpn:
-            if vars(network).get('container'):
+            if vars(network).get('container') and not getattr(network,'is_depot',False) is True:
                 from .steam_runtime import SteamRuntime
                 try:SteamRuntime(network).request('stop')
                 except OSError:pass  # Steam has not been started in this session.

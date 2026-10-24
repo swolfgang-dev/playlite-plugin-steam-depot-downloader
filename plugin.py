@@ -75,7 +75,9 @@ class Plugin(GenericPlugin):
         self.network = getattr(app, '_playlite_depot_network', None) if app else None
         if self.network is None:
             from .vm_backend import VMNetwork
-            self.network = Network() if os.environ.get('PLAYLITE_STEAM_BACKEND')=='docker' else VMNetwork()
+            backend = os.environ.get('PLAYLITE_STEAM_BACKEND', 'depot')
+            self.network = VMNetwork() if backend == 'vm' else Network()
+            if backend != 'vm':self.network.is_depot = backend != 'docker'
             if app is not None:
                 app._playlite_depot_network = self.network
         self.busy = False
@@ -151,6 +153,16 @@ class Plugin(GenericPlugin):
         from .vpn_lifecycle import watch_queue
         watch_queue(self.network,queue)
         for row in queue.entries:
+            if row.metadata.get('backend')=='isolated_depot':
+                if not getattr(self.network,'is_depot',False) is True:continue
+                from .queue_runner import QueueRunner, validate_snapshot
+                try:snapshot=validate_snapshot(row.metadata.get('snapshot',{}))
+                except ValueError:continue
+                row.steam_appid=snapshot['app']
+                row.factory=lambda queue,entry,snapshot=snapshot:QueueRunner(self.network,window,queue,entry,snapshot)
+                if row.state=='Complete':row.controller=row.factory(queue,row)
+                continue
+            if getattr(self.network,'is_depot',False) is True:continue
             if row.metadata.get('backend')!='isolated_steam':continue
             snapshot=row.metadata.get('snapshot',{})
             if (type(snapshot.get('app')) is not int or not 0<snapshot['app']<2**32
@@ -163,6 +175,10 @@ class Plugin(GenericPlugin):
         return QSettings('Playlite', 'SteamDownloader')
 
     def post_install(self,parent=None):
+        if getattr(self.network,'is_depot',False) is True:
+            from .depot_setup import DepotSetupDialog
+            DepotSetupDialog(self.network,parent).exec()
+            return
         from .vm_backend import VMNetwork
         self.network=VMNetwork()
         app=QCoreApplication.instance()
@@ -174,11 +190,15 @@ class Plugin(GenericPlugin):
             self.main_menu_actions(owner)[0][1]()
 
     def prepare_uninstall(self,parent=None):
+        if getattr(self.network,'is_depot',False) is True:return True
         if getattr(self.network,'is_vm',False) is True:return True  # VM and shared games are retained.
         from .environment_uninstall import EnvironmentRemovalDialog
         return EnvironmentRemovalDialog(self.network,parent).exec()==QDialog.DialogCode.Accepted
 
     def create_settings(self, parent=None):
+        if getattr(self.network,'is_depot',False) is True:
+            from .depot_setup import DepotSettings
+            return DepotSettings(self.network,parent)
         widget = SettingsWidget(parent)
         widget.network = self.network
         widget.settings_closed = False

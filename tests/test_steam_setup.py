@@ -37,7 +37,10 @@ class SetupTests(unittest.TestCase):
         from downloader.plugin import Plugin
         from PyQt6.QtWidgets import QApplication
         app=QApplication.instance() or QApplication([])
-        plugin=Plugin();widget=plugin.create_settings()
+        plugin=Plugin()
+        from downloader.network import Network
+        plugin.network=Network()  # Retained Steam desktop backend.
+        widget=plugin.create_settings()
         widget.steam_state='running'
         with patch('downloader.vpn_lifecycle.has_downloads',return_value=True):
             plugin.update_steam_controls(widget)

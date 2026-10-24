@@ -1,6 +1,68 @@
 # Steam Downloader for Playlite
 
-Requires Playlite 0.2.88 or later. New installations use a private Linux VM
+Requires Playlite 0.2.88 or later. The default downloader uses Hubcap/LuaTools
+manifests and an isolated depot worker to download verified content from Steam's
+CDN. No VM or Steam desktop is required. Provider requests, Steam authentication,
+metadata lookups and game downloads share the existing guarded NordVPN namespace.
+The host Steam installation and host VPN configuration are not used.
+
+## Depot worker setup
+
+Open **Settings → Plugins → Steam Downloader** (also offered on installation):
+
+1. Choose **Build worker**. This requires existing Docker access and Git. The
+   pinned DepotDownloaderMod source is built using a temporary Microsoft .NET SDK
+   container, without installing a host SDK or system packages. Sources, NuGet
+   state and publish output are temporary. Docker retains the SDK, gateway and
+   worker images and its normal build cache. Tooling downloads use Docker/Git's
+   normal connection; account and game traffic uses the isolated VPN.
+2. Save your **NordVPN service credentials**, then choose **Connect VPN**. These
+   are OpenVPN service credentials, rather than the VM backend's access token.
+3. Choose **Steam login…** and complete password/Steam Guard authentication in
+   Playlite. Use an account that owns the content. The reusable session is saved
+   in KWallet; the Steam password is not stored.
+4. Enter a fresh LuaTools Discord `/login` code through **LuaTools login…** and
+   save your **Hubcap API key…**. Choose the preferred manifest provider; the
+   other provider is tried when matching content is unavailable.
+
+Credentials and provider/Steam sessions use KWallet and are independent of VM
+sessions. Host prerequisites are not installed automatically. Existing VM data
+and games are retained.
+
+## Direct depot downloads
+
+Open **Playlite menu → Steam Downloader…**, search by name or App ID, choose
+Windows or Linux, language and optional DLC, then add the game to Downloads.
+The **Sign in…** menu contains Steam, LuaTools, Hubcap and downloader setup.
+The plugin folder override takes precedence over General's installation folder.
+New jobs require an empty destination.
+
+Each job loads current Steam depot/package metadata, resolves exact manifest
+versions, checks a CDN sample, then downloads and validates the selected depots.
+Missing manifests or failed authentication/CDN checks stop the job. Workers are
+unprivileged and share the verified VPN gateway; the tunnel-only firewall blocks
+traffic outside the VPN. The VM/desktop runtime is never started.
+
+Queue history contains selections and the account name, without credentials,
+manifest payloads, depot keys or live sessions. After a restart, unfinished jobs
+return paused. Resume/retry refreshes metadata and provider data and validates
+retained partial files under `.playlite-download`. Completed content is promoted
+without overwriting destination files. Cancelled or failed jobs retain partial
+content. Completed jobs support folder access and **Add to Playlite**. Selecting
+DLC downloads content; it does not change licenses or launch configuration.
+
+The VPN remains available while the downloader or queue needs it. The optional
+session preference retains only the VPN. Removing the plugin retains downloaded
+games, existing VM data and Docker images.
+
+## Legacy VM and Steam desktop backends
+
+Set `PLAYLITE_STEAM_BACKEND=vm` to select the retained VM backend. Its queue
+records resume only in that backend; depot jobs resume in the default backend.
+`PLAYLITE_STEAM_BACKEND=docker` selects the older Steam desktop container flow.
+The following instructions describe these legacy backends.
+
+The VM backend uses a private Linux VM
 with Steam, LuaTools/LuaMoon, NordVPN and Wine. Host Steam files and host VPN
 credentials are not used. The optional Docker compatibility backend is described
 below.

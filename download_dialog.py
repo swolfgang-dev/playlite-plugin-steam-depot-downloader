@@ -23,7 +23,7 @@ class DownloadDialog(QDialog):
         self.authentication = authentication
         self.network = network
         from .steam_runtime import RUNTIME_IMAGE
-        self.transport = Transport(network, image=RUNTIME_IMAGE)
+        self.transport = Transport(network) if getattr(network,'is_depot',False) is True else Transport(network, image=RUNTIME_IMAGE)
         self.moon = Moon(self.transport, MoonSessionWallet())
         self.rows = []
         self.content_info = None
@@ -79,6 +79,8 @@ class DownloadDialog(QDialog):
         self.search_items = {}
 
         self.provider = QComboBox(); self.provider.addItems(SOURCES)
+        if getattr(network,'is_depot',False) is True:
+            self.provider.clear();self.provider.addItems(['Hubcap','Luie'])
         self.provider.setCurrentText(QSettings('Playlite','SteamDownloader').value('manifest_provider','Hubcap'))
         form.addRow('Manifest provider', self.provider); download_rows.append(self.provider)
         self.code = QLineEdit(); self.code.setEchoMode(QLineEdit.EchoMode.Password)
@@ -272,6 +274,16 @@ class DownloadDialog(QDialog):
             self.authenticate.clicked.connect(lambda:self.open_authentication('Steam'))
             self.auth_check=QPushButton('Check authentication')
             self.auth_check.clicked.connect(self.check_environment_authentication)
+            if getattr(network,'is_depot',False) is True:
+                self.authenticate.clicked.disconnect()
+                self.authenticate.setText('Sign in…')
+                menu=QMenu(self.authenticate)
+                for label,provider in (('Steam','Steam'),('LuaTools','Moon'),('Hubcap','Hubcap')):
+                    menu.addAction(label,lambda checked=False,provider=provider:self.open_authentication(provider))
+                menu.addAction('Downloader setup…',self.open_setup)
+                self.authenticate.setMenu(menu)
+                self.auth_check.hide()
+                form.setRowVisible(self.provider,True)
             for button in (self.details_button,self.authenticate,self.auth_check):
                 footer.addWidget(button,0,Qt.AlignmentFlag.AlignBottom)
             footer.addStretch()
@@ -471,6 +483,15 @@ class DownloadDialog(QDialog):
 
     def open_authentication(self,name):
         if self.busy:return
+        if getattr(self.network,'is_depot',False) is True:
+            if name=='Steam':
+                dialog=DownloadDialog(self.network,self,authentication='steam')
+                dialog.exec()
+                self.username.setText(QSettings('Playlite','SteamDownloader').value('steam_account',''))
+            else:
+                from .authentication_dialog import CredentialDialog
+                CredentialDialog(name,self.network,self).exec()
+            return
         if getattr(self.network,'is_vm',False) is True:
             self.task(lambda:self.network.open_desktop(),self.status.setText)
             return
@@ -481,6 +502,10 @@ class DownloadDialog(QDialog):
 
     def open_setup(self):
         if self.busy:return
+        if getattr(self.network,'is_depot',False) is True:
+            from .depot_setup import DepotSetupDialog
+            DepotSetupDialog(self.network,self).exec()
+            return
         from .steam_runtime_dialog import SteamRuntimeDialog
         self.steam_status_timer.stop()
         dialog=SteamRuntimeDialog(self.network,self)
@@ -525,6 +550,9 @@ class DownloadDialog(QDialog):
 
     def refresh_steam_status(self):
         if self.shutting_down or self.authentication or self.steam_status_job is not None or not self.isVisible():return
+        if getattr(self.network,'is_depot',False) is True:
+            self.steam_status.setText('Depot worker · isolated VPN connected' if self.network.container else 'Connect the VPN, then sign in through Sign in…')
+            return
         if getattr(self.network,'session_suspended',False) is True:
             self.steam_status.setText('VM paused while a game is running. It resumes when the game exits.')
             return
@@ -650,7 +678,10 @@ class DownloadDialog(QDialog):
                 self.owns_connection = not self.authentication
                 message=(self.network.connect(preferences,progress=progress) if getattr(self.network,'is_vm',False) is True
                          else self.network.connect(preferences,*Wallet().read(),progress=progress))
-            if automatic:
+            if getattr(self.network,'is_depot',False) is True:
+                from .depot_setup import require_worker
+                require_worker()
+            elif automatic:
                 from .steam_runtime import start_with_vpn
                 try:
                     steam_message=start_with_vpn(self.network,progress)
@@ -667,6 +698,8 @@ class DownloadDialog(QDialog):
                 self.vpn_status.setText(message.split('. Isolated public IP:')[0])
                 self.vpn_connect.hide()
         def failed(message):
+            if getattr(self.network,'is_depot',False) is True and not self.authentication:
+                self.vpn_status.setText(message);self.vpn_connect.show()
             if getattr(self.network,'is_vm',False) is True:
                 self.steam_status.setText(message)
                 self.vpn_connect.setText('Retry connection')
@@ -756,6 +789,9 @@ class DownloadDialog(QDialog):
         if not self.authentication:
             self.dlc_list.clear(); self.dlc_note.setText('Loading Steam content information…')
         def operation():
+            if getattr(self.network,'is_depot',False) is True:
+                from .app_info import fetch_app_info
+                return [],fetch_app_info(self.network,app,self.username.text().strip())
             from .steam_catalog import fetch_catalog
             return [], fetch_catalog(self.transport,app,include_dlc=getattr(self.network,'is_vm',False) is not True)
         def done(result):
@@ -843,7 +879,37 @@ class DownloadDialog(QDialog):
     def prepare_download(self):
         if self.authentication: return self.download()
         if self.busy: return
+        if getattr(self.network,'is_depot',False) is True:return self.prepare_depot_download()
         return self.prepare_steam_download()
+
+    def prepare_depot_download(self):
+        try:
+            if not self.content_info or self.game_app()!=self.pack_app:
+                raise ValueError('Choose a game and load its content information first.')
+            if not self.destination.text():raise ValueError('Choose an empty download folder.')
+            destination=Path(self.destination.text()).expanduser().resolve()
+            if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
+                raise ValueError('Choose an empty download folder.')
+            window=self.parentWidget()
+            if not hasattr(window,'download_queue'):raise ValueError('Open this downloader from the Playlite menu.')
+            from .queue_runner import QueueRunner,validate_snapshot
+            snapshot=validate_snapshot({'app':self.pack_app,'platform':self.depot.currentData(),
+                'language':self.language.currentData(),'architecture':self.architecture.currentData(),
+                'branch':self.branch.currentData(),'provider':self.provider.currentText(),
+                'username':self.username.text().strip(),
+                'dlc':[self.dlc_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.dlc_list.count())
+                       if self.dlc_list.item(i).checkState()==Qt.CheckState.Checked]})
+            from .vpn_lifecycle import watch_queue
+            watch_queue(self.network,window.download_queue)
+            network=self.network
+            row=window.download_queue.enqueue(self.game_name or self.content_info['game']['name'],str(destination),
+                lambda queue,entry:QueueRunner(network,window,queue,entry,snapshot),
+                metadata={'backend':'isolated_depot','snapshot':snapshot})
+            row.steam_appid=snapshot['app']
+            self.owns_connection=False
+            self.queue_confirmation.setText('Added to queue')
+            self.status.setText('Added to Downloads. Matching manifests and CDN access are checked when the download starts.')
+        except Exception as error:self.status.setText(str(error))
 
     def prepare_legacy_download(self):
         """Compatibility for existing legacy queue controllers; not exposed in the UI."""
@@ -1002,7 +1068,7 @@ class DownloadDialog(QDialog):
                 if self.content_plan and self.content_index>0:
                     destination,stage=self.download_destination,self.download_staging
                 else:
-                    destination,stage=prepare_destination(destination)
+                    destination,stage=prepare_destination(destination,reuse_staging=getattr(self,'queue_runner',False))
                 self.download_destination=destination;self.download_staging=stage
             args = worker_args(self.network, Request(app, row.id, row.manifest) if row is not None else Request(1, 1), stage, pack=pack, username=self.username.text())
             args[args.index('--workdir') + 1] = '/auth'
@@ -1111,6 +1177,8 @@ class DownloadDialog(QDialog):
         self.read_output()
         continue_download = False
         try:
+            if not self.authentication and getattr(getattr(self,'entry',None),'cancelled',False):
+                raise RuntimeError('Download stopped.')
             if self.authentication:
                 if code: raise RuntimeError('Steam authentication failed or was cancelled. See the login log.')
                 if not self.auth_file.is_file(): raise RuntimeError('Steam did not create a reusable session. See the login log.')

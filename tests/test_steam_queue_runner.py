@@ -109,6 +109,8 @@ class SteamQueueTests(unittest.TestCase):
             path.write_text(json.dumps([{'name':'Game','destination':'/tmp/restored-game','id':'restored',
                 'state':'Complete','status':'Verified','progress':100,'metadata':{'backend':'isolated_steam','snapshot':snapshot}}]))
             window=QWidget();queue=DownloadQueue(window,storage=path);plugin=Plugin()
+            from downloader.network import Network
+            plugin.network=Network()  # Retained Steam desktop queue.
             with patch('downloader.steam_queue_runner.SteamQueueRunner') as runner:
                 plugin.restore_downloads(window,queue)
                 row=queue.entries[0]

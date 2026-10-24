@@ -223,7 +223,7 @@ class UnifiedVMFlowTests(unittest.TestCase):
     def test_install_hook_opens_setup(self):
         cached=getattr(self.app,'_playlite_depot_network',None)
         try:
-            with patch('downloader.steam_runtime_dialog.SteamRuntimeDialog') as wizard:
+            with patch.dict(os.environ,{'PLAYLITE_STEAM_BACKEND':'vm'}),patch.object(self.app,'_playlite_depot_network',None,create=True),patch('downloader.steam_runtime_dialog.SteamRuntimeDialog') as wizard:
                 Plugin().post_install()
                 wizard.return_value.exec.assert_called_once()
         finally:self.app._playlite_depot_network=cached

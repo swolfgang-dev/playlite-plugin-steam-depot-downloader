@@ -6,7 +6,8 @@ from PyQt6.QtCore import QSettings
 
 def default_download_root(context=None):
     from .vm_backend import enabled, configuration
-    if enabled():return configuration()['shared']
+    network=getattr(context,'network',None)
+    if not getattr(network,'is_depot',False) is True and enabled():return configuration()['shared']
     override = QSettings('Playlite', 'SteamDownloader').value('download_root', '', type=str).strip()
     if override:
         return str(Path(override).expanduser())

@@ -63,23 +63,30 @@ def restrict_depots(home,app,allowed,depots):
     eligible={int(key) for key,value in depots.items() if str(key).isdecimal() and isinstance(value,dict)
               and not value.get('dlcappid') and not value.get('depotfromapp') and str(value.get('sharedinstall','0'))!='1'}
     if not eligible:raise RuntimeError('Steam game depot metadata is unavailable. No depot selection was changed.')
+    # Generated scripts can attach keys to the App ID or unrelated depots.
+    # Keep app registrations, but never inject depots absent from app metadata.
+    invalid={app} if str(app) not in depots else set()
     candidates={}
     for path in cache.glob('depotkey_*.yaml'):
         text=path.read_text()
         owner=re.search(r'^appId:\s*(\d+)\s*$',text,re.M)
         depot=re.search(r'^depotId:\s*(\d+)\s*$',text,re.M)
-        if owner and depot and int(owner[1])==app and int(depot[1]) in eligible and int(depot[1]) not in allowed:
+        if owner and depot and int(owner[1])==app and depot[1] not in depots:
+            invalid.add(int(depot[1]))
+        if owner and depot and int(owner[1])==app and (int(depot[1]) in invalid or int(depot[1]) in eligible and int(depot[1]) not in allowed):
             candidates[int(depot[1])]=path
     for match in re.finditer(r'\baddappid\s*\(\s*(\d+)\s*,\s*1\s*,\s*["\'][0-9a-fA-F]{64}["\']\s*\)',source):
         identifier=int(match[1])
-        if identifier in eligible and identifier not in allowed:candidates.setdefault(identifier,None)
+        if str(identifier) not in depots:invalid.add(identifier)
+        if identifier in invalid or identifier in eligible and identifier not in allowed:candidates.setdefault(identifier,None)
     saved_keys=previous.get('keys',{}) if restoring else {}
     if not isinstance(saved_keys, dict):raise RuntimeError('Invalid saved depot key record.')
     for identifier,name in saved_keys.items():
         if not isinstance(identifier,str) or not re.fullmatch('[0-9]+',identifier) or not isinstance(name,str):
             raise RuntimeError('Invalid saved depot key record.')
         if not re.fullmatch(r'depotkey_'+re.escape(identifier)+r'\.yaml-[0-9a-f]{64}',name):raise RuntimeError('Invalid saved depot key record.')
-        if int(identifier) in eligible and int(identifier) not in allowed:candidates.setdefault(int(identifier),None)
+        if identifier not in depots:invalid.add(int(identifier))
+        if int(identifier) in invalid or int(identifier) in eligible and int(identifier) not in allowed:candidates.setdefault(int(identifier),None)
     if not candidates and not restoring:return {'excluded':[],'changed':False}
 
     lines=[]
@@ -87,6 +94,9 @@ def restrict_depots(home,app,allowed,depots):
         # Do not execute Lua or silently remove compound expressions.
         match=re.match(r'^\s*(addappid|setManifestid|setmanifestid)\s*\(\s*(\d+)\b',line)
         if match and int(match[2]) in candidates:
+            if int(match[2]) in invalid and re.fullmatch(r'\s*addappid\s*\(\s*\d+\s*\)\s*;?\s*(?:--[^\n]*)?\n?',line):
+                lines.append(line)
+                continue
             if not re.fullmatch(r'\s*\w+\s*\([^()\n]*\)\s*;?\s*(?:--[^\n]*)?\n?',line):
                 raise RuntimeError('LuaMoon script contains a compound depot expression; selection was not changed.')
             continue
@@ -94,7 +104,9 @@ def restrict_depots(home,app,allowed,depots):
     filtered=''.join(lines)
     # Every excluded keyed call must be gone, including unsupported layouts.
     for identifier in candidates:
-        if re.search(r'\b(?:addappid|setManifestid|setmanifestid)\s*\(\s*'+str(identifier)+r'\b',filtered):
+        pattern=(r'\b(?:addappid|setManifestid|setmanifestid)\s*\(\s*'+str(identifier)+
+                 (r'\s*,' if identifier in invalid else r'\b'))
+        if re.search(pattern,filtered):
             raise RuntimeError('LuaMoon script uses an unsupported depot layout; selection was not changed.')
     backup.mkdir(parents=True,exist_ok=True,mode=0o700)
     digest=hashlib.sha256(source.encode()).hexdigest()

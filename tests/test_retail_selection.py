@@ -60,9 +60,36 @@ class RetailSelectionTests(unittest.TestCase):
                 (cache/f'depotkey_{identifier}.yaml').write_text(f'appId: 10\ndepotId: {identifier}\nkey: private\n')
             script.write_text(script.read_text()+'addappid(20)\naddappid(30)\n')
             selection.restrict_depots(home,10,{11},{'11':{},'12':{},'20':{'depotfromapp':'99'},'30':{'dlcappid':'30'}})
-            for identifier in (10,20,30):
+            for identifier in (20,30):
                 self.assertTrue((cache/f'depotkey_{identifier}.yaml').exists())
                 self.assertIn(f'addappid({identifier})',script.read_text())
+            self.assertFalse((cache/'depotkey_10.yaml').exists())
+            self.assertIn('addappid(10)',script.read_text())
+
+    def test_keyed_app_id_is_removed_without_removing_game_registration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home=Path(directory);script,cache=self.fixture(home)
+            script.write_text(script.read_text()+'addappid(10,1,"'+'c'*64+'")\n')
+            (cache/'depotkey_10.yaml').write_text('appId: 10\ndepotId: 10\nkey: private\n')
+            result=selection.restrict_depots(home,10,{11},{'11':{},'12':{}})
+            self.assertEqual(result,{'excluded':[10,12],'changed':True})
+            self.assertIn('addappid(10)\n',script.read_text())
+            self.assertNotIn('addappid(10,',script.read_text())
+            self.assertFalse((cache/'depotkey_10.yaml').exists())
+            self.assertEqual(selection.restrict_depots(home,10,{11},{'11':{},'12':{}}),
+                             {'excluded':[10,12],'changed':False})
+
+    def test_unknown_keyed_depot_is_excluded_but_app_registration_is_retained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home=Path(directory);script,cache=self.fixture(home)
+            script.write_text(script.read_text()+'addappid(50)\naddappid(51,1,"'+'c'*64+'")\n')
+            (cache/'depotkey_51.yaml').write_text('appId: 10\ndepotId: 51\nkey: private\n')
+            result=selection.restrict_depots(home,10,{11},{'11':{},'12':{}})
+            self.assertEqual(result['excluded'],[12,51])
+            self.assertIn('addappid(50)',script.read_text())
+            self.assertNotIn('addappid(51',script.read_text())
+            self.assertFalse((cache/'depotkey_51.yaml').exists())
+            self.assertEqual(selection.restrict_depots(home,10,{11},{'11':{},'12':{}})['excluded'],[12,51])
 
     def test_failed_ledger_commit_restores_script_and_removed_keys(self):
         with tempfile.TemporaryDirectory() as directory:

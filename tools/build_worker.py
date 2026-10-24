@@ -1,10 +1,12 @@
 """Build the pinned GPL DepotDownloaderMod as a native Linux test worker.
 
-Requires .NET SDK 10 and Docker. Does not access Steam or download game data.
+Requires Docker and Git. Use --container-sdk to build without a host .NET SDK.
+Does not access Steam or download game data.
 The source and .NET 10 patches remain in the specified work directory.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,6 +19,7 @@ def main():
     parser.add_argument('--dotnet', default='dotnet')
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--image', default='playlite-depot-worker:test')
+    parser.add_argument('--container-sdk', action='store_true')
     args = parser.parse_args()
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -62,9 +65,16 @@ def main():
     context = work / 'image'
     context.mkdir(exist_ok=True)
     shutil.copyfile(Path(__file__).parent / 'worker' / 'Dockerfile', context / 'Dockerfile')
-    subprocess.run([args.dotnet, 'publish', str(project), '-c', 'Release', '-r', 'linux-musl-x64',
+    command = [args.dotnet, 'publish', str(project), '-c', 'Release', '-r', 'linux-musl-x64',
                     '--self-contained', 'true', '-p:SourceRevisionId=' + REVISION,
-                    '-o', str(context / 'published')], cwd=source, check=True)
+                    '-o', str(context / 'published')]
+    if args.container_sdk:
+        command = ['docker', 'run', '--rm', '--user', f'{os.getuid()}:{os.getgid()}',
+                   '--mount', f'type=bind,src={work},dst={work}', '--workdir', str(source),
+                   '-e', 'DOTNET_CLI_HOME=/tmp', '-e', 'NUGET_PACKAGES=/tmp/nuget',
+                   '-e', 'DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1',
+                   'mcr.microsoft.com/dotnet/sdk:10.0.100-alpine3.22', 'dotnet', *command[1:]]
+    subprocess.run(command, cwd=source, check=True)
     subprocess.run(['docker', 'build', '--label', 'io.playlite.depot-worker.revision=' + REVISION,
                     '-t', args.image, str(context)], check=True)
 
